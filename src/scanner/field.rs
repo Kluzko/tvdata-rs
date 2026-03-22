@@ -248,11 +248,59 @@ impl From<String> for Market {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct InstrumentRef {
+    pub exchange: String,
+    pub symbol: String,
+}
+
+impl InstrumentRef {
+    pub fn new(exchange: impl Into<String>, symbol: impl Into<String>) -> Self {
+        Self {
+            exchange: exchange.into().trim().to_ascii_uppercase(),
+            symbol: symbol.into().trim().to_owned(),
+        }
+    }
+
+    pub fn from_exchange_symbol(exchange: impl Into<String>, symbol: impl Into<String>) -> Self {
+        let exchange = exchange.into().trim().to_ascii_uppercase();
+        let symbol = normalize_symbol_for_exchange(&exchange, symbol.into().trim());
+        Self { exchange, symbol }
+    }
+
+    pub fn from_internal_us_equity(exchange: impl Into<String>, symbol: impl Into<String>) -> Self {
+        let exchange = exchange.into().trim().to_ascii_uppercase();
+        let symbol = symbol.into().trim().to_ascii_uppercase().replace('-', ".");
+        Self { exchange, symbol }
+    }
+
+    pub fn to_ticker(&self) -> Ticker {
+        Ticker::from_parts(&self.exchange, &self.symbol)
+    }
+}
+
+fn normalize_symbol_for_exchange(exchange: &str, symbol: &str) -> String {
+    let uppercase = symbol.to_ascii_uppercase();
+
+    match exchange {
+        "FX" | "FX_IDC" | "FOREX" | "OANDA" | "FOREXCOM" => uppercase
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect(),
+        "NYSE" | "NASDAQ" | "AMEX" | "ARCA" | "BATS" | "TSX" => uppercase.replace('-', "."),
+        _ => uppercase,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct Ticker(Cow<'static, str>);
 
 impl Ticker {
     pub fn from_parts(exchange: &str, symbol: &str) -> Self {
         Self(Cow::Owned(format!("{exchange}:{symbol}")))
+    }
+
+    pub fn from_exchange_symbol(exchange: &str, symbol: &str) -> Self {
+        InstrumentRef::from_exchange_symbol(exchange, symbol).to_ticker()
     }
 
     pub const fn from_static(raw: &'static str) -> Self {
@@ -292,5 +340,28 @@ impl From<&'static str> for Ticker {
 impl From<String> for Ticker {
     fn from(value: String) -> Self {
         Self::new(value)
+    }
+}
+
+impl From<InstrumentRef> for Ticker {
+    fn from(value: InstrumentRef) -> Self {
+        value.to_ticker()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_internal_us_equity_symbols() {
+        let ticker = Ticker::from_exchange_symbol("NYSE", "BRK-B");
+        assert_eq!(ticker.as_str(), "NYSE:BRK.B");
+    }
+
+    #[test]
+    fn normalizes_forex_pairs() {
+        let instrument = InstrumentRef::from_exchange_symbol("FX", "eur/usd");
+        assert_eq!(instrument.to_ticker().as_str(), "FX:EURUSD");
     }
 }

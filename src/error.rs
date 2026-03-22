@@ -5,6 +5,17 @@ use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    RateLimited,
+    AuthRequired,
+    SymbolNotFound,
+    Transport,
+    Protocol,
+    Unsupported,
+    Api,
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("http request failed: {0}")]
@@ -88,5 +99,53 @@ impl From<reqwest::Error> for Error {
 impl From<tokio_tungstenite::tungstenite::Error> for Error {
     fn from(value: tokio_tungstenite::tungstenite::Error) -> Self {
         Self::WebSocket(Box::new(value))
+    }
+}
+
+impl Error {
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            Self::Http(_) | Self::WebSocket(_) => ErrorKind::Transport,
+            Self::Json(_)
+            | Self::TimeFormat(_)
+            | Self::UrlParse(_)
+            | Self::InvalidPageLimit
+            | Self::InvalidBatchConcurrency
+            | Self::InvalidRetryBounds { .. }
+            | Self::Protocol(_) => ErrorKind::Protocol,
+            Self::EmptySearchQuery | Self::ApiMessage(_) => ErrorKind::Api,
+            Self::ApiStatus { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS => {
+                ErrorKind::RateLimited
+            }
+            Self::ApiStatus { status, .. }
+                if *status == StatusCode::UNAUTHORIZED || *status == StatusCode::FORBIDDEN =>
+            {
+                ErrorKind::AuthRequired
+            }
+            Self::ApiStatus { .. } => ErrorKind::Api,
+            Self::HistoryEmpty { .. }
+            | Self::SymbolNotFound { .. }
+            | Self::QuoteEmpty { .. }
+            | Self::QuoteSymbolFailed { .. } => ErrorKind::SymbolNotFound,
+            Self::ScanValidationUnavailable { .. } | Self::UnsupportedScanFields { .. } => {
+                ErrorKind::Unsupported
+            }
+            Self::HistoryPaginationLimitExceeded { .. } => ErrorKind::Protocol,
+            Self::HistoryDownloadFailed { source, .. } => source.kind(),
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        match self.kind() {
+            ErrorKind::RateLimited | ErrorKind::Transport => true,
+            ErrorKind::AuthRequired
+            | ErrorKind::SymbolNotFound
+            | ErrorKind::Protocol
+            | ErrorKind::Unsupported => false,
+            ErrorKind::Api => matches!(
+                self,
+                Self::ApiStatus { status, .. } if status.is_server_error()
+            ),
+        }
     }
 }

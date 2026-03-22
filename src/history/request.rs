@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use bon::Builder;
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 
-use crate::scanner::Ticker;
+use crate::scanner::{InstrumentRef, Ticker};
 
 pub(crate) fn default_history_batch_concurrency() -> usize {
     4
@@ -123,6 +123,21 @@ impl HistoryBatchRequest {
         self
     }
 
+    pub fn session(mut self, session: TradingSession) -> Self {
+        self.session = session;
+        self
+    }
+
+    pub fn adjustment(mut self, adjustment: Adjustment) -> Self {
+        self.adjustment = adjustment;
+        self
+    }
+
+    pub fn concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency;
+        self
+    }
+
     pub fn fetch_all(mut self) -> Self {
         self.fetch_all = true;
         self
@@ -232,4 +247,133 @@ pub struct HistorySeries {
     pub bars: Vec<Bar>,
 }
 
+impl HistorySeries {
+    pub fn latest(&self) -> Option<&Bar> {
+        self.bars.last()
+    }
+
+    pub fn bar_on(&self, date: Date) -> Option<&Bar> {
+        self.bars.iter().find(|bar| bar.time.date() == date)
+    }
+
+    pub fn latest_on_or_before(&self, date: Date) -> Option<&Bar> {
+        self.bars.iter().rev().find(|bar| bar.time.date() <= date)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BarSelectionPolicy {
+    ExactDate,
+    #[default]
+    LatestOnOrBefore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Builder)]
+pub struct DailyBarRequest {
+    pub symbols: Vec<InstrumentRef>,
+    pub asof: Date,
+    #[builder(default)]
+    pub adjustment: Adjustment,
+    #[builder(default)]
+    pub session: TradingSession,
+    #[builder(default)]
+    pub selection: BarSelectionPolicy,
+    #[builder(default = default_history_batch_concurrency())]
+    pub concurrency: usize,
+}
+
+impl DailyBarRequest {
+    pub fn new<I>(symbols: I, asof: Date) -> Self
+    where
+        I: IntoIterator<Item = InstrumentRef>,
+    {
+        Self {
+            symbols: symbols.into_iter().collect(),
+            asof,
+            adjustment: Adjustment::default(),
+            session: TradingSession::default(),
+            selection: BarSelectionPolicy::default(),
+            concurrency: default_history_batch_concurrency(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Builder)]
+pub struct DailyBarRangeRequest {
+    pub symbols: Vec<InstrumentRef>,
+    pub start: Date,
+    pub end: Date,
+    #[builder(default)]
+    pub adjustment: Adjustment,
+    #[builder(default)]
+    pub session: TradingSession,
+    #[builder(default = default_history_batch_concurrency())]
+    pub concurrency: usize,
+}
+
+impl DailyBarRangeRequest {
+    pub fn new<I>(symbols: I, start: Date, end: Date) -> Self
+    where
+        I: IntoIterator<Item = InstrumentRef>,
+    {
+        Self {
+            symbols: symbols.into_iter().collect(),
+            start,
+            end,
+            adjustment: Adjustment::default(),
+            session: TradingSession::default(),
+            concurrency: default_history_batch_concurrency(),
+        }
+    }
+}
+
 pub type HistorySeriesMap = BTreeMap<Ticker, HistorySeries>;
+
+#[cfg(test)]
+mod tests {
+    use time::macros::datetime;
+
+    use super::*;
+
+    #[test]
+    fn selects_bars_by_date() {
+        let series = HistorySeries {
+            symbol: Ticker::from_static("NASDAQ:AAPL"),
+            interval: Interval::Day1,
+            bars: vec![
+                Bar {
+                    time: datetime!(2026-03-18 00:00 UTC),
+                    open: 1.0,
+                    high: 2.0,
+                    low: 0.5,
+                    close: 1.5,
+                    volume: Some(10.0),
+                },
+                Bar {
+                    time: datetime!(2026-03-20 00:00 UTC),
+                    open: 2.0,
+                    high: 3.0,
+                    low: 1.5,
+                    close: 2.5,
+                    volume: Some(12.0),
+                },
+            ],
+        };
+
+        assert_eq!(
+            series
+                .bar_on(datetime!(2026-03-18 00:00 UTC).date())
+                .unwrap()
+                .close,
+            1.5
+        );
+        assert_eq!(
+            series
+                .latest_on_or_before(datetime!(2026-03-19 00:00 UTC).date())
+                .unwrap()
+                .close,
+            1.5
+        );
+        assert_eq!(series.latest().unwrap().close, 2.5);
+    }
+}

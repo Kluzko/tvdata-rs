@@ -9,6 +9,7 @@ use time::OffsetDateTime;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::batch::{BatchResult, SymbolFailure};
 use crate::client::Endpoints;
 use crate::error::{Error, Result};
 use crate::transport::websocket::{
@@ -251,6 +252,55 @@ where
     Ok(series.into_iter().map(|(_, series)| series).collect())
 }
 
+pub(crate) async fn fetch_history_batch_detailed_with<F, Fut>(
+    requests: Vec<HistoryRequest>,
+    concurrency: usize,
+    mut fetcher: F,
+) -> Result<BatchResult<HistorySeries>>
+where
+    F: FnMut(HistoryRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<HistorySeries>>,
+{
+    if concurrency == 0 {
+        return Err(Error::InvalidBatchConcurrency);
+    }
+
+    if requests.is_empty() {
+        return Ok(BatchResult::default());
+    }
+
+    let mut outcomes = stream::iter(requests.into_iter().enumerate().map(|(index, request)| {
+        let symbol = request.symbol.clone();
+        let future = fetcher(request);
+
+        async move { (index, symbol, future.await) }
+    }))
+    .buffer_unordered(concurrency)
+    .collect::<Vec<_>>()
+    .await;
+
+    outcomes.sort_by_key(|(index, _, _)| *index);
+
+    let mut batch = BatchResult::default();
+    for (_, symbol, outcome) in outcomes {
+        match outcome {
+            Ok(series) => {
+                batch.successes.insert(symbol, series);
+            }
+            Err(error) if error.kind() == crate::error::ErrorKind::SymbolNotFound => {
+                batch.missing.push(symbol);
+            }
+            Err(error) => {
+                batch
+                    .failures
+                    .push(SymbolFailure::from_error(symbol, error));
+            }
+        }
+    }
+
+    Ok(batch)
+}
+
 fn merge_timescale_update(bars: &mut BTreeMap<i64, Bar>, envelope: &Value) -> Result<()> {
     let payload = envelope
         .get("p")
@@ -324,6 +374,7 @@ mod tests {
     use super::*;
     use crate::client::Endpoints;
     use crate::history::Interval;
+    use crate::scanner::Ticker;
 
     #[test]
     fn merges_history_bars_from_timescale_update() {
@@ -416,6 +467,47 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, Error::InvalidBatchConcurrency));
+    }
+
+    #[tokio::test]
+    async fn detailed_batch_history_collects_successes_missing_and_failures() {
+        let requests = vec![
+            HistoryRequest::new("NASDAQ:MSFT", Interval::Day1, 2),
+            HistoryRequest::new("NASDAQ:AAPL", Interval::Day1, 2),
+            HistoryRequest::new("NASDAQ:NVDA", Interval::Day1, 2),
+        ];
+
+        let batch = fetch_history_batch_detailed_with(requests, 2, |request| async move {
+            match request.symbol.as_str() {
+                "NASDAQ:MSFT" => Ok(HistorySeries {
+                    symbol: request.symbol,
+                    interval: request.interval,
+                    bars: vec![Bar {
+                        time: datetime!(2026-03-20 00:00 UTC),
+                        open: 1.0,
+                        high: 2.0,
+                        low: 0.5,
+                        close: 1.5,
+                        volume: Some(10.0),
+                    }],
+                }),
+                "NASDAQ:AAPL" => Err(Error::HistoryEmpty {
+                    symbol: request.symbol.as_str().to_owned(),
+                }),
+                _ => Err(Error::Protocol("broken payload")),
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            batch
+                .successes
+                .contains_key(&Ticker::from_static("NASDAQ:MSFT"))
+        );
+        assert_eq!(batch.missing, vec![Ticker::from_static("NASDAQ:AAPL")]);
+        assert_eq!(batch.failures.len(), 1);
+        assert_eq!(batch.failures[0].symbol.as_str(), "NASDAQ:NVDA");
     }
 
     #[tokio::test]

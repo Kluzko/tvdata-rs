@@ -7,7 +7,7 @@ pub mod registry;
 pub mod response;
 pub mod validation;
 
-pub use field::{Column, Market, Ticker};
+pub use field::{Column, InstrumentRef, Market, Ticker};
 pub use filter::{
     FilterCondition, FilterOperator, FilterTree, IntoFilterValue, LogicalOperator, SortOrder,
     SortSpec,

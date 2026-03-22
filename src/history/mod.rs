@@ -2,14 +2,45 @@ mod fetch;
 mod request;
 
 use request::HistorySeriesMap;
+use time::{Date, OffsetDateTime};
 
+use crate::batch::BatchResult;
 use crate::client::TradingViewClient;
 use crate::error::Result;
-use crate::scanner::Ticker;
+use crate::scanner::{InstrumentRef, Ticker};
 
 pub use request::{
-    Adjustment, Bar, HistoryBatchRequest, HistoryRequest, HistorySeries, Interval, TradingSession,
+    Adjustment, Bar, BarSelectionPolicy, DailyBarRangeRequest, DailyBarRequest,
+    HistoryBatchRequest, HistoryRequest, HistorySeries, Interval, TradingSession,
 };
+
+fn estimated_daily_bars_since(date: Date) -> u32 {
+    let today = OffsetDateTime::now_utc().date();
+    let days = if date <= today {
+        (today - date).whole_days().max(0) as u32
+    } else {
+        0
+    };
+
+    days.saturating_add(32).max(64)
+}
+
+fn daily_batch_request(
+    symbols: &[InstrumentRef],
+    start: Date,
+    session: TradingSession,
+    adjustment: Adjustment,
+    concurrency: usize,
+) -> HistoryBatchRequest {
+    HistoryBatchRequest::new(
+        symbols.iter().cloned().map(Into::<Ticker>::into),
+        Interval::Day1,
+        estimated_daily_bars_since(start),
+    )
+    .session(session)
+    .adjustment(adjustment)
+    .concurrency(concurrency)
+}
 
 impl TradingViewClient {
     /// Downloads multiple OHLCV history series with bounded concurrency.
@@ -31,6 +62,20 @@ impl TradingViewClient {
     /// ```
     pub async fn history_batch(&self, request: &HistoryBatchRequest) -> Result<Vec<HistorySeries>> {
         fetch::fetch_history_batch_with(
+            request.to_requests(),
+            request.concurrency,
+            |request| async move { self.history(&request).await },
+        )
+        .await
+    }
+
+    /// Downloads multiple OHLCV history series and returns successes, missing symbols, and
+    /// failures separately.
+    pub async fn history_batch_detailed(
+        &self,
+        request: &HistoryBatchRequest,
+    ) -> Result<BatchResult<HistorySeries>> {
+        fetch::fetch_history_batch_detailed_with(
             request.to_requests(),
             request.concurrency,
             |request| async move { self.history(&request).await },
@@ -120,6 +165,80 @@ impl TradingViewClient {
             .into_iter()
             .map(|series| (series.symbol.clone(), series))
             .collect())
+    }
+
+    /// Downloads daily bars for a set of instruments and selects the best bar for the requested
+    /// trading date.
+    pub async fn daily_bars_on(&self, request: &DailyBarRequest) -> Result<BatchResult<Bar>> {
+        let history_request = daily_batch_request(
+            &request.symbols,
+            request.asof,
+            request.session,
+            request.adjustment,
+            request.concurrency,
+        );
+        let batch = self.history_batch_detailed(&history_request).await?;
+
+        let mut selected = BatchResult {
+            missing: batch.missing,
+            failures: batch.failures,
+            ..BatchResult::default()
+        };
+
+        for (ticker, series) in batch.successes {
+            let bar = match request.selection {
+                BarSelectionPolicy::ExactDate => series.bar_on(request.asof),
+                BarSelectionPolicy::LatestOnOrBefore => series.latest_on_or_before(request.asof),
+            };
+
+            match bar.cloned() {
+                Some(bar) => {
+                    selected.successes.insert(ticker, bar);
+                }
+                None => selected.missing.push(ticker),
+            }
+        }
+
+        Ok(selected)
+    }
+
+    /// Downloads daily history and trims each successful series to the requested date window.
+    pub async fn daily_bars_range(
+        &self,
+        request: &DailyBarRangeRequest,
+    ) -> Result<BatchResult<HistorySeries>> {
+        if request.start > request.end {
+            return Ok(BatchResult::default());
+        }
+
+        let history_request = daily_batch_request(
+            &request.symbols,
+            request.start,
+            request.session,
+            request.adjustment,
+            request.concurrency,
+        );
+        let batch = self.history_batch_detailed(&history_request).await?;
+
+        let mut selected = BatchResult {
+            missing: batch.missing,
+            failures: batch.failures,
+            ..BatchResult::default()
+        };
+
+        for (ticker, mut series) in batch.successes {
+            series
+                .bars
+                .retain(|bar| bar.time.date() >= request.start && bar.time.date() <= request.end);
+
+            if series.bars.is_empty() {
+                selected.missing.push(ticker);
+            } else {
+                selected.successes.insert(ticker, series);
+            }
+        }
+
+        Ok(selected)
     }
 }
 
