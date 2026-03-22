@@ -21,7 +21,9 @@ use crate::economics::{
     sanitize_calendar,
 };
 use crate::error::{Error, Result};
-use crate::history::{HistoryRequest, HistorySeries, fetch_history};
+use crate::history::{
+    Adjustment, HistoryRequest, HistorySeries, TradingSession, fetch_history_with_timeout,
+};
 use crate::scanner::{
     Market, PartiallySupportedColumn, RawScanResponse, ScanQuery, ScanResponse,
     ScanValidationReport, ScannerMetainfo, ScreenerKind, embedded_registry,
@@ -63,6 +65,14 @@ fn default_data_origin() -> Url {
 
 fn default_timeout() -> Duration {
     Duration::from_secs(30)
+}
+
+fn default_history_session_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_history_batch_concurrency() -> usize {
+    4
 }
 
 fn default_user_agent() -> String {
@@ -154,6 +164,24 @@ impl RetryConfig {
             .retry_bounds(self.min_retry_interval, self.max_retry_interval)
             .jitter(self.jitter.into())
             .build_with_max_retries(self.max_retries)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Builder)]
+pub struct HistoryClientConfig {
+    #[builder(default = default_history_session_timeout())]
+    pub session_timeout: Duration,
+    #[builder(default = default_history_batch_concurrency())]
+    pub default_batch_concurrency: usize,
+    #[builder(default)]
+    pub default_session: TradingSession,
+    #[builder(default)]
+    pub default_adjustment: Adjustment,
+}
+
+impl Default for HistoryClientConfig {
+    fn default() -> Self {
+        Self::builder().build()
     }
 }
 
@@ -274,6 +302,7 @@ pub struct TradingViewClient {
     user_agent: String,
     auth_token: String,
     session_id: Option<String>,
+    history_config: HistoryClientConfig,
     metainfo_cache: Arc<RwLock<HashMap<String, ScannerMetainfo>>>,
 }
 
@@ -285,6 +314,7 @@ impl TradingViewClient {
         #[builder(default = Endpoints::default())] endpoints: Endpoints,
         #[builder(default = default_timeout())] timeout: Duration,
         #[builder(default = RetryConfig::default())] retry: RetryConfig,
+        #[builder(default = HistoryClientConfig::default())] history_config: HistoryClientConfig,
         #[builder(default = default_user_agent(), into)] user_agent: String,
         #[builder(default = default_auth_token(), into)] auth_token: String,
         #[builder(into)] session_id: Option<String>,
@@ -328,8 +358,30 @@ impl TradingViewClient {
             user_agent,
             auth_token,
             session_id,
+            history_config,
             metainfo_cache: Arc::new(RwLock::new(HashMap::new())),
         })
+    }
+
+    pub fn for_backend_history() -> Result<Self> {
+        Self::builder()
+            .timeout(Duration::from_secs(60))
+            .retry(
+                RetryConfig::builder()
+                    .max_retries(4)
+                    .min_retry_interval(Duration::from_millis(500))
+                    .max_retry_interval(Duration::from_secs(5))
+                    .build(),
+            )
+            .history_config(
+                HistoryClientConfig::builder()
+                    .session_timeout(Duration::from_secs(60))
+                    .default_batch_concurrency(8)
+                    .default_session(TradingSession::Regular)
+                    .default_adjustment(Adjustment::Splits)
+                    .build(),
+            )
+            .build()
     }
 
     pub fn endpoints(&self) -> &Endpoints {
@@ -346,6 +398,10 @@ impl TradingViewClient {
 
     pub(crate) fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    pub fn history_config(&self) -> &HistoryClientConfig {
+        &self.history_config
     }
 
     /// Executes a low-level TradingView screener query.
@@ -843,12 +899,13 @@ impl TradingViewClient {
     /// To fetch the maximum history currently available, construct the request
     /// with `HistoryRequest::max("NASDAQ:AAPL", Interval::Day1)`.
     pub async fn history(&self, request: &HistoryRequest) -> Result<HistorySeries> {
-        fetch_history(
+        fetch_history_with_timeout(
             &self.endpoints,
             &self.auth_token,
             &self.user_agent,
             self.session_id(),
             request,
+            self.history_config.session_timeout,
         )
         .await
     }

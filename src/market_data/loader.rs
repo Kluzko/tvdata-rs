@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::batch::{BatchResult, SymbolFailure};
 use crate::client::TradingViewClient;
 use crate::error::{Error, Result};
 use crate::scanner::fields::price;
@@ -78,6 +79,74 @@ impl<'a> SnapshotLoader<'a> {
                     })
             })
             .collect()
+    }
+
+    pub(crate) async fn fetch_many_detailed<I, T>(
+        &self,
+        symbols: I,
+        columns: Vec<Column>,
+    ) -> Result<BatchResult<ScanRow>>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Ticker>,
+    {
+        let requested = symbols.into_iter().map(Into::into).collect::<Vec<Ticker>>();
+        if requested.is_empty() {
+            return Ok(BatchResult::default());
+        }
+
+        let mut seen = HashSet::new();
+        let tickers = requested
+            .iter()
+            .filter(|ticker| seen.insert(ticker.as_str().to_owned()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let query = self
+            .base_query
+            .clone()
+            .tickers(tickers.clone())
+            .select(columns)
+            .page(0, seen.len())?;
+
+        let response = match self.client.scan(&query).await {
+            Ok(response) => response,
+            Err(error) => {
+                let kind = error.kind();
+                let retryable = error.is_retryable();
+                let message = error.to_string();
+                let failures = tickers
+                    .into_iter()
+                    .map(|ticker| SymbolFailure {
+                        symbol: ticker,
+                        kind,
+                        message: message.clone(),
+                        retryable,
+                    })
+                    .collect();
+                return Ok(BatchResult {
+                    failures,
+                    ..BatchResult::default()
+                });
+            }
+        };
+
+        let rows_by_symbol = response
+            .rows
+            .into_iter()
+            .map(|row| (row.symbol.clone(), row))
+            .collect::<HashMap<_, _>>();
+
+        let mut batch = BatchResult::default();
+        for ticker in tickers {
+            match rows_by_symbol.get(ticker.as_str()).cloned() {
+                Some(row) => {
+                    batch.successes.insert(ticker, row);
+                }
+                None => batch.missing.push(ticker),
+            }
+        }
+
+        Ok(batch)
     }
 
     pub(crate) async fn fetch_market_quotes(

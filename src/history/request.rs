@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use bon::Builder;
 use time::{Date, OffsetDateTime};
 
+use crate::metadata::DataLineage;
 use crate::scanner::{InstrumentRef, Ticker};
 
 pub(crate) fn default_history_batch_concurrency() -> usize {
@@ -245,6 +246,7 @@ pub struct HistorySeries {
     pub symbol: Ticker,
     pub interval: Interval,
     pub bars: Vec<Bar>,
+    pub provenance: HistoryProvenance,
 }
 
 impl HistorySeries {
@@ -329,11 +331,23 @@ impl DailyBarRangeRequest {
 
 pub type HistorySeriesMap = BTreeMap<Ticker, HistorySeries>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryProvenance {
+    pub requested_symbol: Ticker,
+    pub resolved_symbol: Ticker,
+    pub exchange: Option<String>,
+    pub session: TradingSession,
+    pub adjustment: Adjustment,
+    pub authenticated: bool,
+    pub lineage: DataLineage,
+}
+
 #[cfg(test)]
 mod tests {
     use time::macros::datetime;
 
     use super::*;
+    use crate::metadata::{DataSourceKind, HistoryKind};
 
     #[test]
     fn selects_bars_by_date() {
@@ -358,6 +372,20 @@ mod tests {
                     volume: Some(12.0),
                 },
             ],
+            provenance: HistoryProvenance {
+                requested_symbol: Ticker::from_static("NASDAQ:AAPL"),
+                resolved_symbol: Ticker::from_static("NASDAQ:AAPL"),
+                exchange: Some("NASDAQ".to_owned()),
+                session: TradingSession::Regular,
+                adjustment: Adjustment::Splits,
+                authenticated: false,
+                lineage: DataLineage::new(
+                    DataSourceKind::HistoryWebSocket,
+                    HistoryKind::Native,
+                    datetime!(2026-03-22 00:00 UTC),
+                    Some(datetime!(2026-03-20 00:00 UTC)),
+                ),
+            },
         };
 
         assert_eq!(

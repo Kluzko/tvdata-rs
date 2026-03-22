@@ -22,6 +22,7 @@ use self::history::{
     decode_estimate_history, decode_point_in_time_fundamentals, estimate_history_fields,
     fundamentals_history_fields,
 };
+use crate::batch::BatchResult;
 use crate::client::TradingViewClient;
 use crate::error::Result;
 use crate::market_data::{
@@ -105,6 +106,26 @@ impl<'a> EquityClient<'a> {
             .iter()
             .map(|row| decode_quote(&decoder, row))
             .collect::<Vec<_>>())
+    }
+
+    pub async fn quotes_batch<I, T>(&self, symbols: I) -> Result<BatchResult<QuoteSnapshot>>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Ticker>,
+    {
+        let columns = equity_quote_columns();
+        let decoder = RowDecoder::new(&columns);
+        let rows = self.loader().fetch_many_detailed(symbols, columns).await?;
+
+        Ok(BatchResult {
+            successes: rows
+                .successes
+                .into_iter()
+                .map(|(ticker, row)| (ticker, decode_quote(&decoder, &row)))
+                .collect(),
+            missing: rows.missing,
+            failures: rows.failures,
+        })
     }
 
     /// Fetches a fundamentals snapshot for a single equity symbol.

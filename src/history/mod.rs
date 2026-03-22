@@ -11,7 +11,8 @@ use crate::scanner::{InstrumentRef, Ticker};
 
 pub use request::{
     Adjustment, Bar, BarSelectionPolicy, DailyBarRangeRequest, DailyBarRequest,
-    HistoryBatchRequest, HistoryRequest, HistorySeries, Interval, TradingSession,
+    HistoryBatchRequest, HistoryProvenance, HistoryRequest, HistorySeries, Interval,
+    TradingSession,
 };
 
 fn estimated_daily_bars_since(date: Date) -> u32 {
@@ -113,7 +114,11 @@ impl TradingViewClient {
         I: IntoIterator<Item = T>,
         T: Into<Ticker>,
     {
-        let request = HistoryBatchRequest::max(symbols, interval);
+        let defaults = self.history_config();
+        let request = HistoryBatchRequest::max(symbols, interval)
+            .session(defaults.default_session)
+            .adjustment(defaults.default_adjustment)
+            .concurrency(defaults.default_batch_concurrency);
         self.history_batch(&request).await
     }
 
@@ -128,7 +133,11 @@ impl TradingViewClient {
         I: IntoIterator<Item = T>,
         T: Into<Ticker>,
     {
-        let request = HistoryBatchRequest::new(symbols, interval, bars);
+        let defaults = self.history_config();
+        let request = HistoryBatchRequest::new(symbols, interval, bars)
+            .session(defaults.default_session)
+            .adjustment(defaults.default_adjustment)
+            .concurrency(defaults.default_batch_concurrency);
         self.history_batch(&request).await
     }
 
@@ -242,4 +251,4 @@ impl TradingViewClient {
     }
 }
 
-pub(crate) use fetch::fetch_history;
+pub(crate) use fetch::fetch_history_with_timeout;

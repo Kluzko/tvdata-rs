@@ -1,3 +1,4 @@
+use crate::batch::BatchResult;
 use crate::client::TradingViewClient;
 use crate::error::Result;
 use crate::market_data::{
@@ -63,6 +64,26 @@ impl<'a> ForexClient<'a> {
             .iter()
             .map(|row| decode_quote(&decoder, row))
             .collect::<Vec<_>>())
+    }
+
+    pub async fn quotes_batch<I, T>(&self, symbols: I) -> Result<BatchResult<QuoteSnapshot>>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Ticker>,
+    {
+        let columns = forex_quote_columns();
+        let decoder = RowDecoder::new(&columns);
+        let rows = self.loader().fetch_many_detailed(symbols, columns).await?;
+
+        Ok(BatchResult {
+            successes: rows
+                .successes
+                .into_iter()
+                .map(|(ticker, row)| (ticker, decode_quote(&decoder, &row)))
+                .collect(),
+            missing: rows.missing,
+            failures: rows.failures,
+        })
     }
 
     pub async fn technical_summary(&self, symbol: impl Into<Ticker>) -> Result<TechnicalSummary> {

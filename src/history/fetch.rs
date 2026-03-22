@@ -12,32 +12,13 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::batch::{BatchResult, SymbolFailure};
 use crate::client::Endpoints;
 use crate::error::{Error, Result};
+use crate::metadata::{DataLineage, DataSourceKind, HistoryKind};
 use crate::transport::websocket::{
     connect_socket, next_session_id, parse_framed_messages, send_message, send_raw_frame,
 };
 
-use super::{Bar, HistoryRequest, HistorySeries};
-
-const HISTORY_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
+use super::{Bar, HistoryProvenance, HistoryRequest, HistorySeries};
 const MAX_HISTORY_PAGINATION_ROUNDS: usize = 256;
-
-pub(crate) async fn fetch_history(
-    endpoints: &Endpoints,
-    auth_token: &str,
-    user_agent: &str,
-    session_id: Option<&str>,
-    request: &HistoryRequest,
-) -> Result<HistorySeries> {
-    fetch_history_with_timeout(
-        endpoints,
-        auth_token,
-        user_agent,
-        session_id,
-        request,
-        HISTORY_SESSION_TIMEOUT,
-    )
-    .await
-}
 
 pub(crate) async fn fetch_history_with_timeout(
     endpoints: &Endpoints,
@@ -140,7 +121,11 @@ pub(crate) async fn fetch_history_with_timeout(
                                     }
                                 }
 
-                                return Ok(history_series_from_bars(request, bars));
+                                return Ok(history_series_from_bars(
+                                    request,
+                                    bars,
+                                    session_id.is_some(),
+                                ));
                             }
                             _ => {}
                         }
@@ -160,11 +145,31 @@ pub(crate) async fn fetch_history_with_timeout(
     .map_err(|_| Error::Protocol("history session timed out"))?
 }
 
-fn history_series_from_bars(request: &HistoryRequest, bars: BTreeMap<i64, Bar>) -> HistorySeries {
+fn history_series_from_bars(
+    request: &HistoryRequest,
+    bars: BTreeMap<i64, Bar>,
+    authenticated: bool,
+) -> HistorySeries {
+    let effective_at = bars.values().last().map(|bar| bar.time);
+    let as_of = OffsetDateTime::now_utc();
     HistorySeries {
         symbol: request.symbol.clone(),
         interval: request.interval,
         bars: bars.into_values().collect(),
+        provenance: HistoryProvenance {
+            requested_symbol: request.symbol.clone(),
+            resolved_symbol: request.symbol.clone(),
+            exchange: request.symbol.exchange().map(str::to_owned),
+            session: request.session,
+            adjustment: request.adjustment,
+            authenticated,
+            lineage: DataLineage::new(
+                DataSourceKind::HistoryWebSocket,
+                HistoryKind::Native,
+                as_of,
+                effective_at,
+            ),
+        },
     }
 }
 
@@ -375,6 +380,7 @@ mod tests {
     use crate::client::Endpoints;
     use crate::history::Interval;
     use crate::scanner::Ticker;
+    use crate::{Adjustment, TradingSession};
 
     #[test]
     fn merges_history_bars_from_timescale_update() {
@@ -419,6 +425,20 @@ mod tests {
                     close: 1.5,
                     volume: Some(10.0),
                 }],
+                provenance: HistoryProvenance {
+                    requested_symbol: Ticker::from_static("NASDAQ:MSFT"),
+                    resolved_symbol: Ticker::from_static("NASDAQ:MSFT"),
+                    exchange: Some("NASDAQ".to_owned()),
+                    session: TradingSession::Regular,
+                    adjustment: Adjustment::Splits,
+                    authenticated: false,
+                    lineage: DataLineage::new(
+                        DataSourceKind::HistoryWebSocket,
+                        HistoryKind::Native,
+                        datetime!(2026-03-22 00:00 UTC),
+                        Some(datetime!(2026-03-20 00:00 UTC)),
+                    ),
+                },
             })
         })
         .await
@@ -490,6 +510,20 @@ mod tests {
                         close: 1.5,
                         volume: Some(10.0),
                     }],
+                    provenance: HistoryProvenance {
+                        requested_symbol: Ticker::from_static("NASDAQ:MSFT"),
+                        resolved_symbol: Ticker::from_static("NASDAQ:MSFT"),
+                        exchange: Some("NASDAQ".to_owned()),
+                        session: TradingSession::Regular,
+                        adjustment: Adjustment::Splits,
+                        authenticated: false,
+                        lineage: DataLineage::new(
+                            DataSourceKind::HistoryWebSocket,
+                            HistoryKind::Native,
+                            datetime!(2026-03-22 00:00 UTC),
+                            Some(datetime!(2026-03-20 00:00 UTC)),
+                        ),
+                    },
                 }),
                 "NASDAQ:AAPL" => Err(Error::HistoryEmpty {
                     symbol: request.symbol.as_str().to_owned(),

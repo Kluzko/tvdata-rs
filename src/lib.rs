@@ -23,7 +23,7 @@ pub use calendar::{
     CalendarWindowRequest, DividendCalendarEntry, DividendCalendarRequest, DividendDateKind,
     EarningsCalendarEntry, IpoCalendarEntry,
 };
-pub use client::{Endpoints, RetryConfig, RetryJitter, TradingViewClient};
+pub use client::{Endpoints, HistoryClientConfig, RetryConfig, RetryJitter, TradingViewClient};
 pub use crypto::{CryptoClient, CryptoOverview};
 pub use economics::{
     EconomicCalendarRequest, EconomicCalendarResponse, EconomicEvent, EconomicValue,
@@ -38,7 +38,8 @@ pub use error::{Error, ErrorKind, Result};
 pub use forex::{ForexClient, ForexOverview};
 pub use history::{
     Adjustment, Bar, BarSelectionPolicy, DailyBarRangeRequest, DailyBarRequest,
-    HistoryBatchRequest, HistoryRequest, HistorySeries, Interval, TradingSession,
+    HistoryBatchRequest, HistoryProvenance, HistoryRequest, HistorySeries, Interval,
+    TradingSession,
 };
 pub use market_data::{
     ConversionRatesSnapshot, InstrumentIdentity, QuoteSnapshot, TechnicalSummary,
@@ -57,7 +58,7 @@ pub mod prelude {
         CalendarWindowRequest, DividendCalendarEntry, DividendCalendarRequest, DividendDateKind,
         EarningsCalendarEntry, IpoCalendarEntry,
     };
-    pub use crate::client::{RetryConfig, RetryJitter, TradingViewClient};
+    pub use crate::client::{HistoryClientConfig, RetryConfig, RetryJitter, TradingViewClient};
     pub use crate::crypto::{CryptoClient, CryptoOverview};
     pub use crate::economics::{
         EconomicCalendarRequest, EconomicCalendarResponse, EconomicEvent, EconomicValue,
@@ -70,8 +71,9 @@ pub mod prelude {
     };
     pub use crate::forex::{ForexClient, ForexOverview};
     pub use crate::history::{
-        BarSelectionPolicy, DailyBarRangeRequest, DailyBarRequest, HistoryBatchRequest,
-        HistoryRequest, Interval, TradingSession,
+        Adjustment, Bar, BarSelectionPolicy, DailyBarRangeRequest, DailyBarRequest,
+        HistoryBatchRequest, HistoryProvenance, HistoryRequest, HistorySeries, Interval,
+        TradingSession,
     };
     pub use crate::market_data::{
         ConversionRatesSnapshot, InstrumentIdentity, QuoteSnapshot, TechnicalSummary,

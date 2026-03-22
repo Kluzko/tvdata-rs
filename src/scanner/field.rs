@@ -314,6 +314,18 @@ impl Ticker {
     pub fn as_str(&self) -> &str {
         self.0.as_ref()
     }
+
+    pub fn split(&self) -> Option<(&str, &str)> {
+        self.as_str().split_once(':')
+    }
+
+    pub fn exchange(&self) -> Option<&str> {
+        self.split().map(|(exchange, _)| exchange)
+    }
+
+    pub fn symbol(&self) -> Option<&str> {
+        self.split().map(|(_, symbol)| symbol)
+    }
 }
 
 impl fmt::Display for Ticker {
