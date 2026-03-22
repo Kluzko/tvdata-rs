@@ -86,6 +86,10 @@ fn default_auth_token() -> String {
     DEFAULT_AUTH_TOKEN.to_owned()
 }
 
+fn default_anonymous_auth_token() -> String {
+    DEFAULT_AUTH_TOKEN.to_owned()
+}
+
 fn cookie_header_value(session_id: &str) -> Result<HeaderValue> {
     HeaderValue::from_str(&format!("sessionid={session_id}"))
         .map_err(|_| Error::Protocol("invalid session id configured for cookie header"))
@@ -167,6 +171,84 @@ impl RetryConfig {
             .retry_bounds(self.min_retry_interval, self.max_retry_interval)
             .jitter(self.jitter.into())
             .build_with_max_retries(self.max_retries)
+    }
+}
+
+/// Explicit authentication modes for TradingView HTTP and websocket flows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthMode {
+    #[default]
+    Anonymous,
+    Token,
+    Session,
+    SessionAndToken,
+}
+
+/// Structured authentication configuration for [`TradingViewClient`].
+///
+/// This is an additive alternative to the legacy `auth_token(...)` and `session_id(...)`
+/// builder fields. When provided through `TradingViewClient::builder().auth(...)`, it
+/// takes precedence over the legacy auth fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthConfig {
+    mode: AuthMode,
+    auth_token: Option<String>,
+    session_id: Option<String>,
+}
+
+impl AuthConfig {
+    pub fn anonymous() -> Self {
+        Self {
+            mode: AuthMode::Anonymous,
+            auth_token: None,
+            session_id: None,
+        }
+    }
+
+    pub fn token(auth_token: impl Into<String>) -> Self {
+        Self {
+            mode: AuthMode::Token,
+            auth_token: Some(auth_token.into()),
+            session_id: None,
+        }
+    }
+
+    pub fn session(session_id: impl Into<String>) -> Self {
+        Self {
+            mode: AuthMode::Session,
+            auth_token: None,
+            session_id: Some(session_id.into()),
+        }
+    }
+
+    pub fn session_and_token(session_id: impl Into<String>, auth_token: impl Into<String>) -> Self {
+        Self {
+            mode: AuthMode::SessionAndToken,
+            auth_token: Some(auth_token.into()),
+            session_id: Some(session_id.into()),
+        }
+    }
+
+    pub fn mode(&self) -> AuthMode {
+        self.mode
+    }
+
+    fn resolve(self) -> (String, Option<String>) {
+        match self.mode {
+            AuthMode::Anonymous => (default_anonymous_auth_token(), None),
+            AuthMode::Token => (
+                self.auth_token.unwrap_or_else(default_anonymous_auth_token),
+                None,
+            ),
+            AuthMode::Session => (
+                default_anonymous_auth_token(),
+                self.session_id.filter(|value| !value.is_empty()),
+            ),
+            AuthMode::SessionAndToken => (
+                self.auth_token.unwrap_or_else(default_anonymous_auth_token),
+                self.session_id.filter(|value| !value.is_empty()),
+            ),
+        }
     }
 }
 
@@ -321,8 +403,13 @@ impl TradingViewClient {
         #[builder(default = default_user_agent(), into)] user_agent: String,
         #[builder(default = default_auth_token(), into)] auth_token: String,
         #[builder(into)] session_id: Option<String>,
+        auth: Option<AuthConfig>,
         http_client: Option<ClientWithMiddleware>,
     ) -> Result<Self> {
+        let (auth_token, session_id) = auth
+            .map(AuthConfig::resolve)
+            .unwrap_or((auth_token, session_id));
+
         let http = if let Some(http_client) = http_client {
             http_client
         } else {
@@ -369,6 +456,34 @@ impl TradingViewClient {
                     .default_batch_concurrency(8)
                     .default_session(TradingSession::Regular)
                     .default_adjustment(Adjustment::Splits)
+                    .build(),
+            )
+            .build()
+    }
+
+    /// Builds a client tuned for research-style workflows with moderate retries and timeout.
+    pub fn for_research() -> Result<Self> {
+        Self::builder()
+            .timeout(Duration::from_secs(45))
+            .retry(
+                RetryConfig::builder()
+                    .max_retries(2)
+                    .min_retry_interval(Duration::from_millis(250))
+                    .max_retry_interval(Duration::from_secs(2))
+                    .build(),
+            )
+            .build()
+    }
+
+    /// Builds a client tuned for lower-latency interactive usage.
+    pub fn for_interactive() -> Result<Self> {
+        Self::builder()
+            .timeout(Duration::from_secs(15))
+            .retry(
+                RetryConfig::builder()
+                    .max_retries(1)
+                    .min_retry_interval(Duration::from_millis(100))
+                    .max_retry_interval(Duration::from_millis(500))
                     .build(),
             )
             .build()

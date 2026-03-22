@@ -402,6 +402,23 @@ async fn main() -> Result<()> {
 }
 ```
 
+For backend code that wants a more explicit auth shape, use `AuthConfig` instead of wiring
+legacy auth fields separately:
+
+```rust,no_run
+use tvdata_rs::{AuthConfig, Result, TradingViewClient};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let client = TradingViewClient::builder()
+        .auth(AuthConfig::session("your-session-id"))
+        .build()?;
+
+    let _ = client.search_equities("AAPL").await?;
+    Ok(())
+}
+```
+
 ### Retry And Endpoint Overrides
 
 ```rust,no_run
@@ -456,6 +473,14 @@ async fn main() -> Result<()> {
 When a shared HTTP client is injected, `tvdata-rs` still applies TradingView-specific
 request headers such as `Origin`, `Referer`, `User-Agent`, and the optional `sessionid`
 cookie. HTTP retry and timeout behavior should be configured on the shared client itself.
+
+### Preset Clients
+
+For common workload profiles, you can start from a prebuilt client preset:
+
+- `TradingViewClient::for_backend_history()`
+- `TradingViewClient::for_research()`
+- `TradingViewClient::for_interactive()`
 
 ### Failure Classification
 

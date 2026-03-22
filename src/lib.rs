@@ -37,7 +37,10 @@ pub use calendar::{
     CalendarWindowRequest, DividendCalendarEntry, DividendCalendarRequest, DividendDateKind,
     EarningsCalendarEntry, IpoCalendarEntry,
 };
-pub use client::{Endpoints, HistoryClientConfig, RetryConfig, RetryJitter, TradingViewClient};
+pub use client::{
+    AuthConfig, AuthMode, Endpoints, HistoryClientConfig, RetryConfig, RetryJitter,
+    TradingViewClient,
+};
 #[cfg(feature = "crypto")]
 pub use crypto::{CryptoClient, CryptoOverview};
 #[cfg(feature = "economics")]
@@ -86,7 +89,9 @@ pub mod prelude {
         CalendarWindowRequest, DividendCalendarEntry, DividendCalendarRequest, DividendDateKind,
         EarningsCalendarEntry, IpoCalendarEntry,
     };
-    pub use crate::client::{HistoryClientConfig, RetryConfig, RetryJitter, TradingViewClient};
+    pub use crate::client::{
+        AuthConfig, AuthMode, HistoryClientConfig, RetryConfig, RetryJitter, TradingViewClient,
+    };
     #[cfg(feature = "crypto")]
     pub use crate::crypto::{CryptoClient, CryptoOverview};
     #[cfg(feature = "economics")]

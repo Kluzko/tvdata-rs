@@ -360,6 +360,35 @@ async fn search_uses_session_cookie_when_configured() {
 }
 
 #[tokio::test]
+async fn search_uses_session_cookie_from_auth_config() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/symbol_search/v3"))
+        .and(header("cookie", "sessionid=test-session"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"symbols_remaining":0,"symbols":[]}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let endpoints = Endpoints::default()
+        .with_symbol_search_base_url(format!("{}/symbol_search/v3", server.uri()))
+        .unwrap();
+    let client = TradingViewClient::builder()
+        .endpoints(endpoints)
+        .auth(AuthConfig::session("test-session"))
+        .build()
+        .unwrap();
+
+    let response = client
+        .search_response(&SearchRequest::new("AAPL"))
+        .await
+        .unwrap();
+
+    assert!(response.hits.is_empty());
+}
+
+#[tokio::test]
 async fn search_uses_injected_http_client_and_applies_default_headers() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -411,6 +440,35 @@ async fn search_uses_injected_http_client_and_applies_default_headers() {
             .and_then(|value| value.to_str().ok()),
         Some("sessionid=test-session")
     );
+}
+
+#[test]
+fn auth_config_overrides_legacy_auth_fields() {
+    let client = TradingViewClient::builder()
+        .auth_token("legacy-token")
+        .session_id("legacy-session")
+        .auth(AuthConfig::session_and_token(
+            "fresh-session",
+            "fresh-token",
+        ))
+        .build()
+        .unwrap();
+
+    assert_eq!(client.session_id(), Some("fresh-session"));
+    assert_eq!(client.auth_token(), "fresh-token");
+}
+
+#[test]
+fn anonymous_auth_config_clears_legacy_session_fields() {
+    let client = TradingViewClient::builder()
+        .auth_token("legacy-token")
+        .session_id("legacy-session")
+        .auth(AuthConfig::anonymous())
+        .build()
+        .unwrap();
+
+    assert_eq!(client.session_id(), None);
+    assert_eq!(client.auth_token(), "unauthorized_user_token");
 }
 
 #[test]
