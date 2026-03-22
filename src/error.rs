@@ -148,4 +148,89 @@ impl Error {
             ),
         }
     }
+
+    pub fn is_auth_error(&self) -> bool {
+        self.kind() == ErrorKind::AuthRequired
+    }
+
+    pub fn is_rate_limited(&self) -> bool {
+        self.kind() == ErrorKind::RateLimited
+    }
+
+    pub fn is_symbol_error(&self) -> bool {
+        self.kind() == ErrorKind::SymbolNotFound
+    }
+
+    pub fn is_transport_error(&self) -> bool {
+        self.kind() == ErrorKind::Transport
+    }
+
+    pub fn is_protocol_error(&self) -> bool {
+        self.kind() == ErrorKind::Protocol
+    }
+
+    pub fn is_unsupported_error(&self) -> bool {
+        self.kind() == ErrorKind::Unsupported
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn helper_methods_follow_error_kind_classification() {
+        let auth = Error::ApiStatus {
+            status: StatusCode::UNAUTHORIZED,
+            body: String::from("unauthorized"),
+        };
+        assert!(auth.is_auth_error());
+        assert!(!auth.is_retryable());
+
+        let rate_limited = Error::ApiStatus {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            body: String::from("rate limited"),
+        };
+        assert!(rate_limited.is_rate_limited());
+        assert!(rate_limited.is_retryable());
+
+        let symbol = Error::SymbolNotFound {
+            symbol: String::from("NASDAQ:AAPL"),
+        };
+        assert!(symbol.is_symbol_error());
+        assert!(!symbol.is_retryable());
+
+        let transport = Error::ApiStatus {
+            status: StatusCode::BAD_GATEWAY,
+            body: String::from("upstream failed"),
+        };
+        assert_eq!(transport.kind(), ErrorKind::Api);
+        assert!(!transport.is_transport_error());
+        assert!(transport.is_retryable());
+
+        let protocol = Error::Protocol("bad frame");
+        assert!(protocol.is_protocol_error());
+        assert!(!protocol.is_retryable());
+
+        let unsupported = Error::UnsupportedScanFields {
+            route: String::from("america/scan"),
+            fields: vec![String::from("bad_field")],
+        };
+        assert!(unsupported.is_unsupported_error());
+        assert!(!unsupported.is_retryable());
+    }
+
+    #[test]
+    fn wrapped_history_download_failures_preserve_helper_behavior() {
+        let wrapped = Error::HistoryDownloadFailed {
+            symbol: String::from("NASDAQ:AAPL"),
+            source: Box::new(Error::ApiStatus {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                body: String::from("rate limited"),
+            }),
+        };
+
+        assert!(wrapped.is_rate_limited());
+        assert!(wrapped.is_retryable());
+    }
 }

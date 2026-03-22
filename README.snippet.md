@@ -151,6 +151,7 @@ async fn main() -> Result<()> {
 - endpoint overrides
 - auth-aware `sessionid` cookies for HTTP and websocket requests
 - injecting a shared HTTP client when your application already owns transport middleware
+- operational error helpers such as `is_rate_limited()` and `is_auth_error()`
 
 ## Caveat
 

@@ -457,6 +457,35 @@ When a shared HTTP client is injected, `tvdata-rs` still applies TradingView-spe
 request headers such as `Origin`, `Referer`, `User-Agent`, and the optional `sessionid`
 cookie. HTTP retry and timeout behavior should be configured on the shared client itself.
 
+### Failure Classification
+
+Backend workers can classify failures without string matching:
+
+```rust,no_run
+use tvdata_rs::{Error, Result, TradingViewClient};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let client = TradingViewClient::builder().build()?;
+
+    match client.search_equities("AAPL").await {
+        Ok(_) => {}
+        Err(error) if error.is_rate_limited() => {
+            // back off and retry later
+        }
+        Err(error) if error.is_auth_error() => {
+            // refresh credentials or disable auth-aware mode
+        }
+        Err(error) if error.is_symbol_error() => {
+            // suppress or mark the symbol as unavailable
+        }
+        Err(error) => return Err(error),
+    }
+
+    Ok(())
+}
+```
+
 ## Design Notes
 
 The crate intentionally separates:
