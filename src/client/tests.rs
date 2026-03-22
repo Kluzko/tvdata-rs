@@ -360,6 +360,78 @@ async fn search_uses_session_cookie_when_configured() {
 }
 
 #[tokio::test]
+async fn search_uses_injected_http_client_and_applies_default_headers() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/symbol_search/v3"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"symbols_remaining":0,"symbols":[]}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let endpoints = Endpoints::default()
+        .with_symbol_search_base_url(format!("{}/symbol_search/v3", server.uri()))
+        .unwrap();
+    let shared_http =
+        reqwest_middleware::ClientWithMiddleware::from(reqwest::Client::builder().build().unwrap());
+    let client = TradingViewClient::builder()
+        .endpoints(endpoints)
+        .session_id("test-session")
+        .http_client(shared_http)
+        .build()
+        .unwrap();
+
+    let response = client
+        .search_response(&SearchRequest::new("AAPL"))
+        .await
+        .unwrap();
+
+    assert!(response.hits.is_empty());
+    let requests = server.received_requests().await.unwrap();
+    let request = &requests[0];
+    assert_eq!(
+        request
+            .headers
+            .get("origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("https://www.tradingview.com/")
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("referer")
+            .and_then(|value| value.to_str().ok()),
+        Some("https://www.tradingview.com/")
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("cookie")
+            .and_then(|value| value.to_str().ok()),
+        Some("sessionid=test-session")
+    );
+}
+
+#[test]
+fn builder_accepts_injected_http_client_with_invalid_retry_bounds() {
+    let shared_http =
+        reqwest_middleware::ClientWithMiddleware::from(reqwest::Client::builder().build().unwrap());
+
+    let client = TradingViewClient::builder()
+        .http_client(shared_http)
+        .retry(
+            RetryConfig::builder()
+                .min_retry_interval(Duration::from_secs(2))
+                .max_retry_interval(Duration::from_millis(500))
+                .build(),
+        )
+        .build();
+
+    assert!(client.is_ok());
+}
+
+#[tokio::test]
 async fn scan_validated_rejects_unsupported_fields_before_scan_request() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

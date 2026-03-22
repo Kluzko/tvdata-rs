@@ -150,6 +150,7 @@ async fn main() -> Result<()> {
 - retry configuration
 - endpoint overrides
 - auth-aware `sessionid` cookies for HTTP and websocket requests
+- injecting a shared HTTP client when your application already owns transport middleware
 
 ## Caveat
 

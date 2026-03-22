@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bon::{Builder, bon};
-use reqwest::header::{COOKIE, HeaderMap, HeaderValue, ORIGIN, REFERER};
+use reqwest::header::{COOKIE, HeaderValue, ORIGIN, REFERER, USER_AGENT};
 use reqwest_middleware::{
     ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware, RequestBuilder,
 };
@@ -321,38 +321,25 @@ impl TradingViewClient {
         #[builder(default = default_user_agent(), into)] user_agent: String,
         #[builder(default = default_auth_token(), into)] auth_token: String,
         #[builder(into)] session_id: Option<String>,
+        http_client: Option<ClientWithMiddleware>,
     ) -> Result<Self> {
-        retry.validate()?;
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            ORIGIN,
-            HeaderValue::from_str(endpoints.site_origin.as_str()).map_err(|_| {
-                Error::Protocol("invalid site origin configured for reqwest client")
-            })?,
-        );
-        headers.insert(
-            REFERER,
-            HeaderValue::from_str(&referer(&endpoints.site_origin))
-                .map_err(|_| Error::Protocol("invalid referer configured for reqwest client"))?,
-        );
-        if let Some(session_id) = session_id.as_deref() {
-            headers.insert(COOKIE, cookie_header_value(session_id)?);
-        }
-
-        let base_http = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(timeout)
-            .user_agent(&user_agent)
-            .build()
-            .map_err(Error::from)?;
-
-        let http = if retry.max_retries == 0 {
-            ClientWithMiddleware::from(base_http)
+        let http = if let Some(http_client) = http_client {
+            http_client
         } else {
-            MiddlewareClientBuilder::new(base_http)
-                .with(RetryTransientMiddleware::new_with_policy(retry.to_policy()))
+            retry.validate()?;
+
+            let base_http = reqwest::Client::builder()
+                .timeout(timeout)
                 .build()
+                .map_err(Error::from)?;
+
+            if retry.max_retries == 0 {
+                ClientWithMiddleware::from(base_http)
+            } else {
+                MiddlewareClientBuilder::new(base_http)
+                    .with(RetryTransientMiddleware::new_with_policy(retry.to_policy()))
+                    .build()
+            }
         };
 
         Ok(Self {
@@ -438,9 +425,11 @@ impl TradingViewClient {
     pub async fn scan(&self, query: &ScanQuery) -> Result<ScanResponse> {
         let raw: RawScanResponse = self
             .execute_json(
-                self.http
-                    .post(self.endpoints.scanner_url(&query.route_segment())?)
-                    .json(query),
+                self.request(
+                    self.http
+                        .post(self.endpoints.scanner_url(&query.route_segment())?),
+                )?
+                .json(query),
             )
             .await?;
 
@@ -769,8 +758,7 @@ impl TradingViewClient {
 
         let raw: RawSearchResponse = self
             .execute_json(
-                self.http
-                    .get(self.endpoints.symbol_search_base_url.clone())
+                self.request(self.http.get(self.endpoints.symbol_search_base_url.clone()))?
                     .query(&request.to_query_pairs()),
             )
             .await?;
@@ -803,8 +791,7 @@ impl TradingViewClient {
     ) -> Result<EconomicCalendarResponse> {
         let raw: RawEconomicCalendarResponse = self
             .execute_json(
-                self.http
-                    .get(self.endpoints.calendar_base_url().clone())
+                self.request(self.http.get(self.endpoints.calendar_base_url().clone()))?
                     .query(&request.to_query_pairs()?),
             )
             .await?;
@@ -949,6 +936,33 @@ impl TradingViewClient {
         Ok(body)
     }
 
+    fn request(&self, request: RequestBuilder) -> Result<RequestBuilder> {
+        let request = request
+            .header(
+                ORIGIN,
+                HeaderValue::from_str(self.endpoints.site_origin.as_str())
+                    .map_err(|_| Error::Protocol("invalid site origin configured for request"))?,
+            )
+            .header(
+                REFERER,
+                HeaderValue::from_str(&referer(&self.endpoints.site_origin))
+                    .map_err(|_| Error::Protocol("invalid referer configured for request"))?,
+            )
+            .header(
+                USER_AGENT,
+                HeaderValue::from_str(&self.user_agent)
+                    .map_err(|_| Error::Protocol("invalid user agent configured for request"))?,
+            );
+
+        let request = if let Some(session_id) = self.session_id.as_deref() {
+            request.header(COOKIE, cookie_header_value(session_id)?)
+        } else {
+            request
+        };
+
+        Ok(request)
+    }
+
     async fn cached_metainfo(&self, market: &Market) -> Result<ScannerMetainfo> {
         if let Some(cached) = self
             .metainfo_cache
@@ -961,7 +975,9 @@ impl TradingViewClient {
         }
 
         let metainfo: ScannerMetainfo = self
-            .execute_json(self.http.get(self.endpoints.scanner_metainfo_url(market)?))
+            .execute_json(
+                self.request(self.http.get(self.endpoints.scanner_metainfo_url(market)?))?,
+            )
             .await?;
 
         self.metainfo_cache

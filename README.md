@@ -431,6 +431,32 @@ async fn main() -> Result<()> {
 }
 ```
 
+### Shared HTTP Clients
+
+If your backend already owns a shared HTTP stack with custom middleware, proxy/TLS settings,
+or request telemetry, inject it directly instead of letting `tvdata-rs` construct a new one:
+
+```rust,no_run
+use reqwest_middleware::ClientWithMiddleware;
+use tvdata_rs::{Result, TradingViewClient};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let shared_http = ClientWithMiddleware::from(reqwest::Client::new());
+
+    let client = TradingViewClient::builder()
+        .http_client(shared_http)
+        .build()?;
+
+    let _ = client.metainfo("america").await?;
+    Ok(())
+}
+```
+
+When a shared HTTP client is injected, `tvdata-rs` still applies TradingView-specific
+request headers such as `Origin`, `Referer`, `User-Agent`, and the optional `sessionid`
+cookie. HTTP retry and timeout behavior should be configured on the shared client itself.
+
 ## Design Notes
 
 The crate intentionally separates:
