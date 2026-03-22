@@ -12,16 +12,21 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, warn};
 
 use crate::batch::{BatchResult, SymbolFailure};
+#[cfg(test)]
 use crate::client::Endpoints;
+use crate::client::TradingViewClient;
 use crate::error::{Error, Result};
 use crate::metadata::{DataLineage, DataSourceKind, HistoryKind};
+#[cfg(test)]
+use crate::transport::websocket::connect_socket;
 use crate::transport::websocket::{
-    connect_socket, next_session_id, parse_framed_messages, send_message, send_raw_frame,
+    next_session_id, parse_framed_messages, send_message, send_raw_frame,
 };
 
 use super::{Bar, HistoryProvenance, HistoryRequest, HistorySeries};
 const MAX_HISTORY_PAGINATION_ROUNDS: usize = 256;
 
+#[cfg(test)]
 pub(crate) async fn fetch_history_with_timeout(
     endpoints: &Endpoints,
     auth_token: &str,
@@ -147,6 +152,184 @@ pub(crate) async fn fetch_history_with_timeout(
 
                                 let series =
                                     history_series_from_bars(request, bars, session_id.is_some());
+                                #[cfg(feature = "tracing")]
+                                debug!(
+                                    target: "tvdata_rs::history",
+                                    symbol = %series.symbol.as_str(),
+                                    bars = series.bars.len(),
+                                    pagination_rounds = pagination
+                                        .as_ref()
+                                        .map(|pagination| pagination.rounds)
+                                        .unwrap_or(0),
+                                    "chart websocket history fetch completed",
+                                );
+                                return Ok(series);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Message::Ping(payload) => socket.send(Message::Pong(payload)).await?,
+                Message::Close(_) => {
+                    #[cfg(feature = "tracing")]
+                    warn!(
+                        target: "tvdata_rs::history",
+                        symbol = %request.symbol.as_str(),
+                        bars = bars.len(),
+                        "chart websocket closed before history fetch completed",
+                    );
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        Err(Error::HistoryEmpty {
+            symbol: request.symbol.as_str().to_owned(),
+        })
+    })
+    .await;
+
+    match result {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            #[cfg(feature = "tracing")]
+            warn!(
+                target: "tvdata_rs::history",
+                symbol = %request.symbol.as_str(),
+                timeout_ms = history_timeout.as_millis() as u64,
+                "chart websocket history fetch timed out",
+            );
+            Err(Error::Protocol("history session timed out"))
+        }
+    }
+}
+
+pub(crate) async fn fetch_history_with_timeout_for_client(
+    client: &TradingViewClient,
+    request: &HistoryRequest,
+    history_timeout: Duration,
+) -> Result<HistorySeries> {
+    #[cfg(feature = "tracing")]
+    debug!(
+        target: "tvdata_rs::history",
+        symbol = %request.symbol.as_str(),
+        interval = request.interval.as_code(),
+        bars = request.bars,
+        fetch_all = request.fetch_all,
+        session = request.session.as_code(),
+        adjustment = request.adjustment.as_code(),
+        authenticated = client.session_id().is_some(),
+        "starting chart websocket history fetch",
+    );
+
+    let mut socket = client.connect_socket().await?;
+    let requested_chunk_bars = request.bars.max(1);
+
+    let chart_session = next_session_id("cs");
+    send_message(&mut socket, "set_auth_token", json!([client.auth_token()])).await?;
+    send_message(
+        &mut socket,
+        "chart_create_session",
+        json!([chart_session.as_str(), ""]),
+    )
+    .await?;
+    send_message(
+        &mut socket,
+        "resolve_symbol",
+        json!([
+            chart_session.as_str(),
+            "symbol_1",
+            format!(
+                "={{\"symbol\":\"{}\",\"adjustment\":\"{}\",\"session\":\"{}\"}}",
+                request.symbol.as_str(),
+                request.adjustment.as_code(),
+                request.session.as_code()
+            )
+        ]),
+    )
+    .await?;
+    send_message(
+        &mut socket,
+        "create_series",
+        json!([
+            chart_session.as_str(),
+            "s1",
+            "s1",
+            "symbol_1",
+            request.interval.as_code(),
+            requested_chunk_bars
+        ]),
+    )
+    .await?;
+    send_message(
+        &mut socket,
+        "switch_timezone",
+        json!([chart_session.as_str(), "exchange"]),
+    )
+    .await?;
+
+    let result = timeout(history_timeout, async {
+        let mut bars = BTreeMap::new();
+        let mut pagination = request
+            .fetch_all
+            .then(|| HistoryPagination::new(requested_chunk_bars));
+        while let Some(message) = socket.next().await {
+            let message = message?;
+            match message {
+                Message::Text(text) => {
+                    for payload in parse_framed_messages(&text)? {
+                        if let Some(heartbeat) = payload.strip_prefix("~h~") {
+                            send_raw_frame(&mut socket, format!("~h~{heartbeat}")).await?;
+                            continue;
+                        }
+
+                        let envelope: Value = match serde_json::from_str(payload) {
+                            Ok(value) => value,
+                            Err(_) => continue,
+                        };
+                        let message_type = envelope
+                            .get("m")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+
+                        match message_type {
+                            "timescale_update" => merge_timescale_update(&mut bars, &envelope)?,
+                            "series_completed" => {
+                                if bars.is_empty() {
+                                    return Err(Error::HistoryEmpty {
+                                        symbol: request.symbol.as_str().to_owned(),
+                                    });
+                                }
+
+                                if let Some(pagination) = pagination.as_mut() {
+                                    if let Some(chunk_bars) = pagination
+                                        .next_chunk_bars(&bars, request.symbol.as_str())?
+                                    {
+                                        send_message(
+                                            &mut socket,
+                                            "request_more_data",
+                                            json!([chart_session.as_str(), "s1", chunk_bars]),
+                                        )
+                                        .await?;
+                                        #[cfg(feature = "tracing")]
+                                        debug!(
+                                            target: "tvdata_rs::history",
+                                            symbol = %request.symbol.as_str(),
+                                            chunk_bars,
+                                            bars = bars.len(),
+                                            pagination_rounds = pagination.rounds,
+                                            "requested additional history chunk",
+                                        );
+                                        continue;
+                                    }
+                                }
+
+                                let series = history_series_from_bars(
+                                    request,
+                                    bars,
+                                    client.session_id().is_some(),
+                                );
                                 #[cfg(feature = "tracing")]
                                 debug!(
                                     target: "tvdata_rs::history",

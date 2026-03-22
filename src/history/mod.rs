@@ -314,4 +314,4 @@ impl TradingViewClient {
     }
 }
 
-pub(crate) use fetch::fetch_history_with_timeout;
+pub(crate) use fetch::fetch_history_with_timeout_for_client;

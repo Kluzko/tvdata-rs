@@ -4,6 +4,11 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use futures_util::{SinkExt, StreamExt};
+use serde_json::Value;
+use time::macros::datetime;
+use tokio::net::TcpListener;
+use tokio_tungstenite::{accept_async, tungstenite::Message};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
 
@@ -66,6 +71,31 @@ impl Respond for DelayedSearchResponder {
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
 
         ResponseTemplate::new(200).set_body_string(r#"{"symbols_remaining":0,"symbols":[]}"#)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct CountingWebSocketConnector {
+    calls: Arc<AtomicUsize>,
+}
+
+impl CountingWebSocketConnector {
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl WebSocketConnector for CountingWebSocketConnector {
+    fn connect<'a>(
+        &'a self,
+        endpoints: &'a Endpoints,
+        user_agent: &'a str,
+        session_id: Option<&'a str>,
+    ) -> WebSocketConnectFuture<'a> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(crate::transport::websocket::connect_socket(
+            endpoints, user_agent, session_id,
+        ))
     }
 }
 
@@ -664,6 +694,100 @@ fn grouped_profile_config_matches_backend_history_preset() {
         client.request_budget().max_concurrent_websocket_sessions,
         Some(8)
     );
+}
+
+#[tokio::test]
+async fn custom_websocket_connector_is_used_for_history_requests() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+
+        while let Some(message) = socket.next().await {
+            let message = message.unwrap();
+            if let Message::Text(text) = message {
+                let payload = crate::transport::websocket::parse_framed_messages(&text)
+                    .unwrap()
+                    .remove(0)
+                    .to_owned();
+                let envelope: Value = serde_json::from_str(&payload).unwrap();
+                let method = envelope
+                    .get("m")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+
+                if method == "create_series" {
+                    send_ws_message(
+                        &mut socket,
+                        serde_json::json!({
+                            "m": "timescale_update",
+                            "p": [
+                                "cs_test",
+                                {
+                                    "s1": {
+                                        "s": [
+                                            { "i": 0, "v": [1773667800.0, 252.105, 253.885, 249.88, 252.82, 32074209.0] }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }),
+                    )
+                    .await;
+                    send_ws_message(
+                        &mut socket,
+                        serde_json::json!({ "m": "series_completed", "p": ["cs_test", "s1"] }),
+                    )
+                    .await;
+                    break;
+                }
+            }
+        }
+    });
+
+    let connector = CountingWebSocketConnector::default();
+    let endpoints = Endpoints::default()
+        .with_websocket_url(format!("ws://{address}"))
+        .unwrap();
+    let client = TradingViewClient::from_config(
+        TradingViewClientConfig::builder()
+            .endpoints(endpoints)
+            .transport(
+                TransportConfig::builder()
+                    .websocket_connector(Arc::new(connector.clone()))
+                    .build(),
+            )
+            .build(),
+    )
+    .unwrap();
+
+    let series = client
+        .history(&crate::HistoryRequest::new(
+            "NASDAQ:AAPL",
+            crate::Interval::Day1,
+            1,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(connector.calls(), 1);
+    assert_eq!(series.bars.len(), 1);
+    assert_eq!(series.bars[0].time, datetime!(2026-03-16 13:30:00 UTC));
+    server.await.unwrap();
+}
+
+async fn send_ws_message(
+    socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    payload: Value,
+) {
+    let payload = payload.to_string();
+    socket
+        .send(Message::Text(
+            format!("~m~{}~m~{payload}", payload.len()).into(),
+        ))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

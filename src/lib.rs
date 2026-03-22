@@ -38,8 +38,9 @@ pub use calendar::{
     EarningsCalendarEntry, IpoCalendarEntry,
 };
 pub use client::{
-    AuthConfig, AuthMode, Endpoints, HistoryClientConfig, RequestBudget, RetryConfig, RetryJitter,
-    TradingViewClient, TradingViewClientConfig, TransportConfig,
+    AuthConfig, AuthMode, DefaultWebSocketConnector, Endpoints, HistoryClientConfig, RequestBudget,
+    RetryConfig, RetryJitter, TradingViewClient, TradingViewClientConfig, TransportConfig,
+    WebSocketConnectFuture, WebSocketConnector,
 };
 #[cfg(feature = "crypto")]
 pub use crypto::{CryptoClient, CryptoOverview};
@@ -81,6 +82,7 @@ pub use scanner::{
 #[cfg(feature = "search")]
 pub use search::{SearchAssetClass, SearchHit, SearchRequest, SearchResponse};
 pub use time_series::{FiscalPeriod, HistoricalObservation};
+pub use transport::websocket::TradingViewWebSocket;
 
 pub mod prelude {
     pub use crate::batch::{BatchResult, SymbolFailure};
@@ -90,8 +92,9 @@ pub mod prelude {
         EarningsCalendarEntry, IpoCalendarEntry,
     };
     pub use crate::client::{
-        AuthConfig, AuthMode, HistoryClientConfig, RequestBudget, RetryConfig, RetryJitter,
-        TradingViewClient, TradingViewClientConfig, TransportConfig,
+        AuthConfig, AuthMode, DefaultWebSocketConnector, HistoryClientConfig, RequestBudget,
+        RetryConfig, RetryJitter, TradingViewClient, TradingViewClientConfig, TransportConfig,
+        WebSocketConnectFuture, WebSocketConnector,
     };
     #[cfg(feature = "crypto")]
     pub use crate::crypto::{CryptoClient, CryptoOverview};
@@ -137,5 +140,5 @@ pub mod prelude {
     #[cfg(feature = "search")]
     pub use crate::search::{SearchAssetClass, SearchHit, SearchRequest, SearchResponse};
     pub use crate::time_series::{FiscalPeriod, HistoricalObservation};
-    pub use crate::{ErrorKind, Result};
+    pub use crate::{ErrorKind, Result, TradingViewWebSocket};
 }

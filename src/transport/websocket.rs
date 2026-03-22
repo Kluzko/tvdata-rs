@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 use crate::client::Endpoints;
 use crate::error::{Error, Result};
 
-pub(crate) type TradingViewWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+pub type TradingViewWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub(crate) async fn connect_socket(
     endpoints: &Endpoints,

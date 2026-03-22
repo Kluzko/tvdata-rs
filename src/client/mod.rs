@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(feature = "tracing")]
@@ -29,7 +31,8 @@ use crate::economics::{
 };
 use crate::error::{Error, Result};
 use crate::history::{
-    Adjustment, HistoryRequest, HistorySeries, TradingSession, fetch_history_with_timeout,
+    Adjustment, HistoryRequest, HistorySeries, TradingSession,
+    fetch_history_with_timeout_for_client,
 };
 use crate::scanner::{
     Market, PartiallySupportedColumn, RawScanResponse, ScanQuery, ScanResponse,
@@ -39,6 +42,7 @@ use crate::scanner::{
 use crate::search::{
     RawSearchResponse, SearchHit, SearchRequest, SearchResponse, sanitize_response,
 };
+use crate::transport::websocket::{TradingViewWebSocket, connect_socket};
 
 const DEFAULT_USER_AGENT: &str =
     "tvdata-rs/0.1 (+https://github.com/deepentropy/tvscreener reference)";
@@ -358,6 +362,32 @@ impl RequestBudget {
     }
 }
 
+pub type WebSocketConnectFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<TradingViewWebSocket>> + Send + 'a>>;
+
+pub trait WebSocketConnector: std::fmt::Debug + Send + Sync {
+    fn connect<'a>(
+        &'a self,
+        endpoints: &'a Endpoints,
+        user_agent: &'a str,
+        session_id: Option<&'a str>,
+    ) -> WebSocketConnectFuture<'a>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DefaultWebSocketConnector;
+
+impl WebSocketConnector for DefaultWebSocketConnector {
+    fn connect<'a>(
+        &'a self,
+        endpoints: &'a Endpoints,
+        user_agent: &'a str,
+        session_id: Option<&'a str>,
+    ) -> WebSocketConnectFuture<'a> {
+        Box::pin(connect_socket(endpoints, user_agent, session_id))
+    }
+}
+
 #[derive(Debug, Clone, Builder)]
 pub struct TransportConfig {
     #[builder(default = default_timeout())]
@@ -367,6 +397,7 @@ pub struct TransportConfig {
     #[builder(default = default_user_agent(), into)]
     pub user_agent: String,
     pub http_client: Option<ClientWithMiddleware>,
+    pub websocket_connector: Option<Arc<dyn WebSocketConnector>>,
 }
 
 impl Default for TransportConfig {
@@ -625,6 +656,7 @@ pub struct TradingViewClient {
     history_config: HistoryClientConfig,
     request_budget: RequestBudget,
     request_budget_state: Arc<RequestBudgetState>,
+    websocket_connector: Arc<dyn WebSocketConnector>,
     metainfo_cache: Arc<RwLock<HashMap<String, ScannerMetainfo>>>,
 }
 
@@ -644,18 +676,21 @@ impl TradingViewClient {
         auth: Option<AuthConfig>,
         transport_config: Option<TransportConfig>,
         http_client: Option<ClientWithMiddleware>,
+        websocket_connector: Option<Arc<dyn WebSocketConnector>>,
     ) -> Result<Self> {
         let transport_config = transport_config.unwrap_or(TransportConfig {
             timeout,
             retry,
             user_agent,
             http_client,
+            websocket_connector,
         });
         let TransportConfig {
             timeout,
             retry,
             user_agent,
             http_client,
+            websocket_connector,
         } = transport_config;
 
         let (auth_token, session_id) = auth
@@ -692,6 +727,8 @@ impl TradingViewClient {
             history_config,
             request_budget: request_budget.clone(),
             request_budget_state: Arc::new(RequestBudgetState::new(&request_budget)),
+            websocket_connector: websocket_connector
+                .unwrap_or_else(|| Arc::new(DefaultWebSocketConnector)),
             metainfo_cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -724,12 +761,6 @@ impl TradingViewClient {
         &self.endpoints
     }
 
-    #[cfg(feature = "equity")]
-    pub(crate) fn user_agent(&self) -> &str {
-        &self.user_agent
-    }
-
-    #[cfg(feature = "equity")]
     pub(crate) fn auth_token(&self) -> &str {
         &self.auth_token
     }
@@ -1339,11 +1370,8 @@ impl TradingViewClient {
             "fetching TradingView history",
         );
 
-        let series = fetch_history_with_timeout(
-            &self.endpoints,
-            &self.auth_token,
-            &self.user_agent,
-            self.session_id(),
+        let series = fetch_history_with_timeout_for_client(
+            self,
             request,
             self.history_config.session_timeout,
         )
@@ -1500,6 +1528,12 @@ impl TradingViewClient {
                 .map_err(|_| Error::Protocol("websocket request budget closed")),
             None => Ok(None),
         }
+    }
+
+    pub(crate) async fn connect_socket(&self) -> Result<TradingViewWebSocket> {
+        self.websocket_connector
+            .connect(self.endpoints(), &self.user_agent, self.session_id())
+            .await
     }
 
     async fn cached_metainfo(&self, market: &Market) -> Result<ScannerMetainfo> {

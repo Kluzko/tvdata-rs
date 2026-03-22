@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::scanner::Column;
 use crate::scanner::Ticker;
 use crate::transport::websocket::{
-    connect_socket, next_session_id, parse_framed_messages, send_message, send_raw_frame,
+    next_session_id, parse_framed_messages, send_message, send_raw_frame,
 };
 
 const QUOTE_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -80,12 +80,7 @@ impl<'a> QuoteSessionClient<'a> {
         fields: &[Column],
     ) -> Result<QuoteFieldValues> {
         let _websocket_budget = self.client.acquire_websocket_slot().await?;
-        let mut socket = connect_socket(
-            self.client.endpoints(),
-            self.client.user_agent(),
-            self.client.session_id(),
-        )
-        .await?;
+        let mut socket = self.client.connect_socket().await?;
         let quote_session = next_session_id("qs");
         let requested_symbol = symbol.as_str().to_owned();
         let set_fields_args = quote_set_fields_payload(quote_session.as_str(), fields);

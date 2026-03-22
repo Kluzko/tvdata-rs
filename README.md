@@ -481,6 +481,10 @@ The flat builder remains supported. If `transport_config(...)` is provided on th
 it takes precedence over the flat transport fields like `timeout(...)`, `retry(...)`,
 `user_agent(...)`, and `http_client(...)`.
 
+`TransportConfig` can also carry a custom `websocket_connector` for deterministic integration
+tests, tunneled websocket setups, or proxy-aware environments where you want to own the
+connection strategy instead of always using the crate default.
+
 ### Retry And Endpoint Overrides
 
 ```rust,no_run
