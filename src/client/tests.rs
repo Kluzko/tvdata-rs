@@ -1,8 +1,8 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicU32, AtomicUsize, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
@@ -36,6 +36,36 @@ impl Respond for EventuallySuccessfulScan {
                 r#"{"totalCount":1,"data":[{"s":"NASDAQ:AAPL","d":["AAPL",247.99]}]}"#,
             )
         }
+    }
+}
+
+#[derive(Clone)]
+struct DelayedSearchResponder {
+    in_flight: Arc<AtomicUsize>,
+    max_in_flight: Arc<AtomicUsize>,
+}
+
+impl DelayedSearchResponder {
+    fn new() -> Self {
+        Self {
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            max_in_flight: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn max_in_flight(&self) -> usize {
+        self.max_in_flight.load(Ordering::SeqCst)
+    }
+}
+
+impl Respond for DelayedSearchResponder {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight.fetch_max(current, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(60));
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+
+        ResponseTemplate::new(200).set_body_string(r#"{"symbols_remaining":0,"symbols":[]}"#)
     }
 }
 
@@ -487,6 +517,76 @@ fn builder_accepts_injected_http_client_with_invalid_retry_bounds() {
         .build();
 
     assert!(client.is_ok());
+}
+
+#[tokio::test]
+async fn request_budget_serializes_http_requests_when_configured() {
+    let server = MockServer::start().await;
+    let responder = DelayedSearchResponder::new();
+    Mock::given(method("GET"))
+        .and(path("/symbol_search/v3"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let endpoints = Endpoints::default()
+        .with_symbol_search_base_url(format!("{}/symbol_search/v3", server.uri()))
+        .unwrap();
+    let client = TradingViewClient::builder()
+        .endpoints(endpoints)
+        .request_budget(
+            RequestBudget::builder()
+                .max_concurrent_http_requests(1)
+                .build(),
+        )
+        .build()
+        .unwrap();
+
+    let first_request = SearchRequest::new("AAPL");
+    let second_request = SearchRequest::new("MSFT");
+    let started_at = Instant::now();
+    let first = client.search_response(&first_request);
+    let second = client.search_response(&second_request);
+    let (first, second) = tokio::join!(first, second);
+    let elapsed = started_at.elapsed();
+
+    first.unwrap();
+    second.unwrap();
+
+    assert_eq!(responder.max_in_flight(), 1);
+    assert!(elapsed >= Duration::from_millis(100));
+}
+
+#[test]
+fn builder_rejects_zero_request_budget_limits() {
+    let error = TradingViewClient::builder()
+        .request_budget(
+            RequestBudget::builder()
+                .max_concurrent_http_requests(0)
+                .build(),
+        )
+        .build()
+        .unwrap_err();
+
+    assert!(matches!(error, Error::InvalidRequestBudget { .. }));
+}
+
+#[test]
+fn backend_history_preset_applies_request_budget_defaults() {
+    let client = TradingViewClient::for_backend_history().unwrap();
+
+    assert_eq!(
+        client.request_budget().max_concurrent_http_requests,
+        Some(8)
+    );
+    assert_eq!(
+        client.request_budget().max_concurrent_websocket_sessions,
+        Some(8)
+    );
+    assert_eq!(
+        client.request_budget().min_http_interval,
+        Some(Duration::from_millis(50))
+    );
 }
 
 #[tokio::test]

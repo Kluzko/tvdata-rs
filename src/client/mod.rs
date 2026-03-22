@@ -11,7 +11,8 @@ use reqwest_middleware::{
 };
 use reqwest_retry::{Jitter, RetryTransientMiddleware, policies::ExponentialBackoff};
 use serde::de::DeserializeOwned;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::time::{Instant as TokioInstant, sleep_until};
 #[cfg(feature = "tracing")]
 use tracing::{debug, warn};
 use url::Url;
@@ -80,6 +81,38 @@ fn default_history_session_timeout() -> Duration {
 
 fn default_history_batch_concurrency() -> usize {
     4
+}
+
+fn default_backend_http_budget_concurrency() -> usize {
+    8
+}
+
+fn default_backend_websocket_budget_concurrency() -> usize {
+    8
+}
+
+fn default_backend_http_min_interval() -> Duration {
+    Duration::from_millis(50)
+}
+
+fn default_research_http_budget_concurrency() -> usize {
+    4
+}
+
+fn default_research_websocket_budget_concurrency() -> usize {
+    4
+}
+
+fn default_research_http_min_interval() -> Duration {
+    Duration::from_millis(25)
+}
+
+fn default_interactive_http_budget_concurrency() -> usize {
+    2
+}
+
+fn default_interactive_websocket_budget_concurrency() -> usize {
+    2
 }
 
 fn default_user_agent() -> String {
@@ -284,6 +317,64 @@ impl Default for HistoryClientConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Builder)]
+pub struct RequestBudget {
+    pub max_concurrent_http_requests: Option<usize>,
+    pub max_concurrent_websocket_sessions: Option<usize>,
+    pub min_http_interval: Option<Duration>,
+}
+
+impl Default for RequestBudget {
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
+impl RequestBudget {
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.max_concurrent_http_requests == Some(0) {
+            return Err(Error::InvalidRequestBudget {
+                field: "max_concurrent_http_requests",
+            });
+        }
+
+        if self.max_concurrent_websocket_sessions == Some(0) {
+            return Err(Error::InvalidRequestBudget {
+                field: "max_concurrent_websocket_sessions",
+            });
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct RequestBudgetState {
+    http_limiter: Option<Arc<Semaphore>>,
+    websocket_limiter: Option<Arc<Semaphore>>,
+    http_pacer: Option<Arc<Mutex<TokioInstant>>>,
+}
+
+impl RequestBudgetState {
+    fn new(config: &RequestBudget) -> Self {
+        Self {
+            http_limiter: config
+                .max_concurrent_http_requests
+                .map(|limit| Arc::new(Semaphore::new(limit))),
+            websocket_limiter: config
+                .max_concurrent_websocket_sessions
+                .map(|limit| Arc::new(Semaphore::new(limit))),
+            http_pacer: config
+                .min_http_interval
+                .map(|_| Arc::new(Mutex::new(TokioInstant::now()))),
+        }
+    }
+}
+
 /// Typed endpoint configuration for the TradingView surfaces used by the client.
 #[derive(Debug, Clone, PartialEq, Eq, Builder)]
 pub struct Endpoints {
@@ -402,6 +493,8 @@ pub struct TradingViewClient {
     auth_token: String,
     session_id: Option<String>,
     history_config: HistoryClientConfig,
+    request_budget: RequestBudget,
+    request_budget_state: Arc<RequestBudgetState>,
     metainfo_cache: Arc<RwLock<HashMap<String, ScannerMetainfo>>>,
 }
 
@@ -414,6 +507,7 @@ impl TradingViewClient {
         #[builder(default = default_timeout())] timeout: Duration,
         #[builder(default = RetryConfig::default())] retry: RetryConfig,
         #[builder(default = HistoryClientConfig::default())] history_config: HistoryClientConfig,
+        #[builder(default = RequestBudget::default())] request_budget: RequestBudget,
         #[builder(default = default_user_agent(), into)] user_agent: String,
         #[builder(default = default_auth_token(), into)] auth_token: String,
         #[builder(into)] session_id: Option<String>,
@@ -423,6 +517,8 @@ impl TradingViewClient {
         let (auth_token, session_id) = auth
             .map(AuthConfig::resolve)
             .unwrap_or((auth_token, session_id));
+
+        request_budget.validate()?;
 
         let http = if let Some(http_client) = http_client {
             http_client
@@ -450,6 +546,8 @@ impl TradingViewClient {
             auth_token,
             session_id,
             history_config,
+            request_budget: request_budget.clone(),
+            request_budget_state: Arc::new(RequestBudgetState::new(&request_budget)),
             metainfo_cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -472,6 +570,15 @@ impl TradingViewClient {
                     .default_adjustment(Adjustment::Splits)
                     .build(),
             )
+            .request_budget(
+                RequestBudget::builder()
+                    .max_concurrent_http_requests(default_backend_http_budget_concurrency())
+                    .max_concurrent_websocket_sessions(
+                        default_backend_websocket_budget_concurrency(),
+                    )
+                    .min_http_interval(default_backend_http_min_interval())
+                    .build(),
+            )
             .build()
     }
 
@@ -486,6 +593,15 @@ impl TradingViewClient {
                     .max_retry_interval(Duration::from_secs(2))
                     .build(),
             )
+            .request_budget(
+                RequestBudget::builder()
+                    .max_concurrent_http_requests(default_research_http_budget_concurrency())
+                    .max_concurrent_websocket_sessions(
+                        default_research_websocket_budget_concurrency(),
+                    )
+                    .min_http_interval(default_research_http_min_interval())
+                    .build(),
+            )
             .build()
     }
 
@@ -498,6 +614,14 @@ impl TradingViewClient {
                     .max_retries(1)
                     .min_retry_interval(Duration::from_millis(100))
                     .max_retry_interval(Duration::from_millis(500))
+                    .build(),
+            )
+            .request_budget(
+                RequestBudget::builder()
+                    .max_concurrent_http_requests(default_interactive_http_budget_concurrency())
+                    .max_concurrent_websocket_sessions(
+                        default_interactive_websocket_budget_concurrency(),
+                    )
                     .build(),
             )
             .build()
@@ -523,6 +647,10 @@ impl TradingViewClient {
 
     pub fn history_config(&self) -> &HistoryClientConfig {
         &self.history_config
+    }
+
+    pub fn request_budget(&self) -> &RequestBudget {
+        &self.request_budget
     }
 
     /// Executes a low-level TradingView screener query.
@@ -1103,6 +1231,8 @@ impl TradingViewClient {
     /// To fetch the maximum history currently available, construct the request
     /// with `HistoryRequest::max("NASDAQ:AAPL", Interval::Day1)`.
     pub async fn history(&self, request: &HistoryRequest) -> Result<HistorySeries> {
+        let _websocket_budget = self.acquire_websocket_slot().await?;
+
         #[cfg(feature = "tracing")]
         debug!(
             target: "tvdata_rs::history",
@@ -1147,6 +1277,8 @@ impl TradingViewClient {
     }
 
     async fn execute_text(&self, request: RequestBuilder) -> Result<String> {
+        let _http_budget = self.acquire_http_slot().await?;
+
         #[cfg(feature = "tracing")]
         let preview = request_preview(&request);
         #[cfg(feature = "tracing")]
@@ -1236,6 +1368,45 @@ impl TradingViewClient {
         };
 
         Ok(request)
+    }
+
+    async fn acquire_http_slot(&self) -> Result<Option<OwnedSemaphorePermit>> {
+        let permit = match self.request_budget_state.http_limiter.as_ref() {
+            Some(limiter) => Some(
+                limiter
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| Error::Protocol("http request budget closed"))?,
+            ),
+            None => None,
+        };
+
+        if let (Some(pacer), Some(min_interval)) = (
+            self.request_budget_state.http_pacer.as_ref(),
+            self.request_budget.min_http_interval,
+        ) {
+            let mut next_allowed_at = pacer.lock().await;
+            let now = TokioInstant::now();
+            if *next_allowed_at > now {
+                sleep_until(*next_allowed_at).await;
+            }
+            *next_allowed_at = TokioInstant::now() + min_interval;
+        }
+
+        Ok(permit)
+    }
+
+    pub(crate) async fn acquire_websocket_slot(&self) -> Result<Option<OwnedSemaphorePermit>> {
+        match self.request_budget_state.websocket_limiter.as_ref() {
+            Some(limiter) => limiter
+                .clone()
+                .acquire_owned()
+                .await
+                .map(Some)
+                .map_err(|_| Error::Protocol("websocket request budget closed")),
+            None => Ok(None),
+        }
     }
 
     async fn cached_metainfo(&self, market: &Market) -> Result<ScannerMetainfo> {

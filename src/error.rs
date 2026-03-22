@@ -79,6 +79,9 @@ pub enum Error {
     #[error("retry min interval {min:?} cannot exceed max interval {max:?}")]
     InvalidRetryBounds { min: Duration, max: Duration },
 
+    #[error("request budget field {field} must be greater than zero")]
+    InvalidRequestBudget { field: &'static str },
+
     #[error("invalid websocket frame: {0}")]
     Protocol(&'static str),
 }
@@ -112,6 +115,7 @@ impl Error {
             | Self::InvalidPageLimit
             | Self::InvalidBatchConcurrency
             | Self::InvalidRetryBounds { .. }
+            | Self::InvalidRequestBudget { .. }
             | Self::Protocol(_) => ErrorKind::Protocol,
             Self::EmptySearchQuery | Self::ApiMessage(_) => ErrorKind::Api,
             Self::ApiStatus { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS => {

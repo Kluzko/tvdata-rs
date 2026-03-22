@@ -79,6 +79,7 @@ impl<'a> QuoteSessionClient<'a> {
         symbol: &Ticker,
         fields: &[Column],
     ) -> Result<QuoteFieldValues> {
+        let _websocket_budget = self.client.acquire_websocket_slot().await?;
         let mut socket = connect_socket(
             self.client.endpoints(),
             self.client.user_agent(),

@@ -38,7 +38,7 @@ pub use calendar::{
     EarningsCalendarEntry, IpoCalendarEntry,
 };
 pub use client::{
-    AuthConfig, AuthMode, Endpoints, HistoryClientConfig, RetryConfig, RetryJitter,
+    AuthConfig, AuthMode, Endpoints, HistoryClientConfig, RequestBudget, RetryConfig, RetryJitter,
     TradingViewClient,
 };
 #[cfg(feature = "crypto")]
@@ -90,7 +90,8 @@ pub mod prelude {
         EarningsCalendarEntry, IpoCalendarEntry,
     };
     pub use crate::client::{
-        AuthConfig, AuthMode, HistoryClientConfig, RetryConfig, RetryJitter, TradingViewClient,
+        AuthConfig, AuthMode, HistoryClientConfig, RequestBudget, RetryConfig, RetryJitter,
+        TradingViewClient,
     };
     #[cfg(feature = "crypto")]
     pub use crate::crypto::{CryptoClient, CryptoOverview};

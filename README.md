@@ -476,7 +476,7 @@ or request telemetry, inject it directly instead of letting `tvdata-rs` construc
 
 ```rust,no_run
 use reqwest_middleware::ClientWithMiddleware;
-use tvdata_rs::{Result, TradingViewClient};
+use tvdata_rs::{RequestBudget, Result, TradingViewClient};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -484,6 +484,13 @@ async fn main() -> Result<()> {
 
     let client = TradingViewClient::builder()
         .http_client(shared_http)
+        .request_budget(
+            RequestBudget::builder()
+                .max_concurrent_http_requests(8)
+                .max_concurrent_websocket_sessions(8)
+                .min_http_interval(std::time::Duration::from_millis(50))
+                .build(),
+        )
         .build()?;
 
     let _ = client.metainfo("america").await?;
@@ -494,6 +501,40 @@ async fn main() -> Result<()> {
 When a shared HTTP client is injected, `tvdata-rs` still applies TradingView-specific
 request headers such as `Origin`, `Referer`, `User-Agent`, and the optional `sessionid`
 cookie. HTTP retry and timeout behavior should be configured on the shared client itself.
+
+### Request Budgets And Backpressure
+
+For backend jobs that need lightweight pacing without building a separate limiter layer,
+configure a `RequestBudget` on the client:
+
+```rust,no_run
+use std::time::Duration;
+
+use tvdata_rs::{RequestBudget, Result, TradingViewClient};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let client = TradingViewClient::builder()
+        .request_budget(
+            RequestBudget::builder()
+                .max_concurrent_http_requests(8)
+                .max_concurrent_websocket_sessions(8)
+                .min_http_interval(Duration::from_millis(50))
+                .build(),
+        )
+        .build()?;
+
+    let budget = client.request_budget();
+    assert_eq!(budget.max_concurrent_http_requests, Some(8));
+    Ok(())
+}
+```
+
+This budget currently applies:
+
+- HTTP concurrency caps across scan, search, metainfo, and calendar requests
+- HTTP request pacing through `min_http_interval`
+- websocket session caps across chart-history and quote-session flows
 
 ### Observability With `tracing`
 

@@ -159,6 +159,7 @@ async fn main() -> Result<()> {
 - endpoint overrides
 - explicit `AuthConfig` modes for anonymous, session, token, or combined auth
 - auth-aware `sessionid` cookies for HTTP and websocket requests
+- optional `RequestBudget` limits for HTTP pacing and websocket session caps
 - injecting a shared HTTP client when your application already owns transport middleware
 - optional `tracing` instrumentation for HTTP, scanner, history, and websocket flows
 - operational error helpers such as `is_rate_limited()` and `is_auth_error()`
