@@ -3,6 +3,8 @@ mod request;
 
 use request::HistorySeriesMap;
 use time::{Date, OffsetDateTime};
+#[cfg(feature = "tracing")]
+use tracing::debug;
 
 use crate::batch::BatchResult;
 use crate::client::TradingViewClient;
@@ -62,6 +64,16 @@ impl TradingViewClient {
     /// }
     /// ```
     pub async fn history_batch(&self, request: &HistoryBatchRequest) -> Result<Vec<HistorySeries>> {
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::history",
+            requested = request.symbols.len(),
+            interval = request.interval.as_code(),
+            bars = request.bars,
+            concurrency = request.concurrency,
+            "starting history batch",
+        );
+
         fetch::fetch_history_batch_with(
             request.to_requests(),
             request.concurrency,
@@ -76,6 +88,16 @@ impl TradingViewClient {
         &self,
         request: &HistoryBatchRequest,
     ) -> Result<BatchResult<HistorySeries>> {
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::history",
+            requested = request.symbols.len(),
+            interval = request.interval.as_code(),
+            bars = request.bars,
+            concurrency = request.concurrency,
+            "starting detailed history batch",
+        );
+
         fetch::fetch_history_batch_detailed_with(
             request.to_requests(),
             request.concurrency,
@@ -179,6 +201,16 @@ impl TradingViewClient {
     /// Downloads daily bars for a set of instruments and selects the best bar for the requested
     /// trading date.
     pub async fn daily_bars_on(&self, request: &DailyBarRequest) -> Result<BatchResult<Bar>> {
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::history",
+            symbols = request.symbols.len(),
+            asof = %request.asof,
+            selection = ?request.selection,
+            concurrency = request.concurrency,
+            "starting daily bar selection",
+        );
+
         let history_request = daily_batch_request(
             &request.symbols,
             request.asof,
@@ -208,6 +240,16 @@ impl TradingViewClient {
             }
         }
 
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::history",
+            asof = %request.asof,
+            successes = selected.successes.len(),
+            missing = selected.missing.len(),
+            failures = selected.failures.len(),
+            "daily bar selection completed",
+        );
+
         Ok(selected)
     }
 
@@ -219,6 +261,16 @@ impl TradingViewClient {
         if request.start > request.end {
             return Ok(BatchResult::default());
         }
+
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::history",
+            symbols = request.symbols.len(),
+            start = %request.start,
+            end = %request.end,
+            concurrency = request.concurrency,
+            "starting daily history range selection",
+        );
 
         let history_request = daily_batch_request(
             &request.symbols,
@@ -246,6 +298,17 @@ impl TradingViewClient {
                 selected.successes.insert(ticker, series);
             }
         }
+
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::history",
+            start = %request.start,
+            end = %request.end,
+            successes = selected.successes.len(),
+            missing = selected.missing.len(),
+            failures = selected.failures.len(),
+            "daily history range selection completed",
+        );
 
         Ok(selected)
     }

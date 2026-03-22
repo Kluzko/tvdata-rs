@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(feature = "tracing")]
+use std::time::Instant;
 
 use bon::{Builder, bon};
 use reqwest::header::{COOKIE, HeaderValue, ORIGIN, REFERER, USER_AGENT};
@@ -10,6 +12,8 @@ use reqwest_middleware::{
 use reqwest_retry::{Jitter, RetryTransientMiddleware, policies::ExponentialBackoff};
 use serde::de::DeserializeOwned;
 use tokio::sync::RwLock;
+#[cfg(feature = "tracing")]
+use tracing::{debug, warn};
 use url::Url;
 
 #[cfg(feature = "calendar")]
@@ -109,6 +113,16 @@ fn parse_url(value: impl AsRef<str>) -> Result<Url> {
 
 fn referer(origin: &Url) -> String {
     format!("{}/", origin.as_str().trim_end_matches('/'))
+}
+
+#[cfg(feature = "tracing")]
+fn request_preview(request: &RequestBuilder) -> Option<(String, String)> {
+    request.try_clone().and_then(|builder| {
+        builder
+            .build()
+            .ok()
+            .map(|request| (request.method().to_string(), request.url().to_string()))
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -538,17 +552,32 @@ impl TradingViewClient {
     /// }
     /// ```
     pub async fn scan(&self, query: &ScanQuery) -> Result<ScanResponse> {
+        let route = query.route_segment();
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::scan",
+            route = %route,
+            columns = query.columns.len(),
+            markets = query.markets.len(),
+            "executing scanner query",
+        );
+
         let raw: RawScanResponse = self
             .execute_json(
-                self.request(
-                    self.http
-                        .post(self.endpoints.scanner_url(&query.route_segment())?),
-                )?
-                .json(query),
+                self.request(self.http.post(self.endpoints.scanner_url(&route)?))?
+                    .json(query),
             )
             .await?;
 
-        raw.into_response()
+        let response = raw.into_response()?;
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::scan",
+            route = %route,
+            rows = response.rows.len(),
+            "scanner query completed",
+        );
+        Ok(response)
     }
 
     /// Validates a scan query against live TradingView metainfo before execution.
@@ -578,6 +607,14 @@ impl TradingViewClient {
     pub async fn validate_scan_query(&self, query: &ScanQuery) -> Result<ScanValidationReport> {
         let route_segment = query.route_segment();
         let markets = validation_markets(query)?;
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::scan",
+            route = %route_segment,
+            columns = query.columns.len(),
+            markets = markets.len(),
+            "validating scanner query against live metainfo",
+        );
         let mut market_metainfo = Vec::with_capacity(markets.len());
 
         for market in &markets {
@@ -617,13 +654,25 @@ impl TradingViewClient {
             }
         }
 
-        Ok(ScanValidationReport {
+        let report = ScanValidationReport {
             route_segment,
             requested_markets: markets,
             supported_columns,
             partially_supported_columns,
             unsupported_columns,
-        })
+        };
+
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::scan",
+            route = %report.route_segment,
+            supported = report.supported_columns.len(),
+            partial = report.partially_supported_columns.len(),
+            unsupported = report.unsupported_columns.len(),
+            "scanner validation completed",
+        );
+
+        Ok(report)
     }
 
     /// Executes a scan only after validating all requested fields against live TradingView
@@ -871,6 +920,16 @@ impl TradingViewClient {
             return Err(Error::EmptySearchQuery);
         }
 
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::search",
+            text_len = request.text.len(),
+            exchange = request.exchange.as_deref().unwrap_or(""),
+            search_type = request.instrument_type.as_deref().unwrap_or(""),
+            start = request.start,
+            "executing TradingView symbol search",
+        );
+
         let raw: RawSearchResponse = self
             .execute_json(
                 self.request(self.http.get(self.endpoints.symbol_search_base_url.clone()))?
@@ -878,7 +937,15 @@ impl TradingViewClient {
             )
             .await?;
 
-        Ok(sanitize_response(raw))
+        let response = sanitize_response(raw);
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::search",
+            hits = response.hits.len(),
+            symbols_remaining = response.symbols_remaining,
+            "TradingView symbol search completed",
+        );
+        Ok(response)
     }
 
     /// Fetches economic calendar events from TradingView's Reuters-backed calendar feed.
@@ -904,6 +971,14 @@ impl TradingViewClient {
         &self,
         request: &EconomicCalendarRequest,
     ) -> Result<EconomicCalendarResponse> {
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::calendar",
+            from = %request.from,
+            to = %request.to,
+            "executing economic calendar request",
+        );
+
         let raw: RawEconomicCalendarResponse = self
             .execute_json(
                 self.request(self.http.get(self.endpoints.calendar_base_url().clone()))?
@@ -911,7 +986,15 @@ impl TradingViewClient {
             )
             .await?;
 
-        Ok(sanitize_calendar(raw))
+        let response = sanitize_calendar(raw);
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::calendar",
+            events = response.events.len(),
+            status = response.status.as_deref().unwrap_or(""),
+            "economic calendar request completed",
+        );
+        Ok(response)
     }
 
     /// Fetches an earnings calendar window from TradingView scanner fields.
@@ -1020,7 +1103,20 @@ impl TradingViewClient {
     /// To fetch the maximum history currently available, construct the request
     /// with `HistoryRequest::max("NASDAQ:AAPL", Interval::Day1)`.
     pub async fn history(&self, request: &HistoryRequest) -> Result<HistorySeries> {
-        fetch_history_with_timeout(
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::history",
+            symbol = %request.symbol.as_str(),
+            interval = request.interval.as_code(),
+            bars = request.bars,
+            fetch_all = request.fetch_all,
+            session = request.session.as_code(),
+            adjustment = request.adjustment.as_code(),
+            authenticated = self.session_id().is_some(),
+            "fetching TradingView history",
+        );
+
+        let series = fetch_history_with_timeout(
             &self.endpoints,
             &self.auth_token,
             &self.user_agent,
@@ -1028,7 +1124,18 @@ impl TradingViewClient {
             request,
             self.history_config.session_timeout,
         )
-        .await
+        .await?;
+
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::history",
+            symbol = %series.symbol.as_str(),
+            bars = series.bars.len(),
+            authenticated = series.provenance.authenticated,
+            "TradingView history fetch completed",
+        );
+
+        Ok(series)
     }
 
     async fn execute_json<T>(&self, request: RequestBuilder) -> Result<T>
@@ -1040,11 +1147,64 @@ impl TradingViewClient {
     }
 
     async fn execute_text(&self, request: RequestBuilder) -> Result<String> {
-        let response = request.send().await?;
+        #[cfg(feature = "tracing")]
+        let preview = request_preview(&request);
+        #[cfg(feature = "tracing")]
+        let started_at = Instant::now();
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                #[cfg(feature = "tracing")]
+                warn!(
+                    target: "tvdata_rs::http",
+                    method = preview.as_ref().map(|(method, _)| method.as_str()).unwrap_or("UNKNOWN"),
+                    url = preview.as_ref().map(|(_, url)| url.as_str()).unwrap_or("<opaque>"),
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    error = %error,
+                    "TradingView HTTP request failed before receiving a response",
+                );
+                return Err(Error::from(error));
+            }
+        };
         let status = response.status();
-        let body = response.text().await?;
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(error) => {
+                #[cfg(feature = "tracing")]
+                warn!(
+                    target: "tvdata_rs::http",
+                    method = preview.as_ref().map(|(method, _)| method.as_str()).unwrap_or("UNKNOWN"),
+                    url = preview.as_ref().map(|(_, url)| url.as_str()).unwrap_or("<opaque>"),
+                    status = status.as_u16(),
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    error = %error,
+                    "TradingView HTTP response body could not be read",
+                );
+                return Err(Error::from(error));
+            }
+        };
+
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::http",
+            method = preview.as_ref().map(|(method, _)| method.as_str()).unwrap_or("UNKNOWN"),
+            url = preview.as_ref().map(|(_, url)| url.as_str()).unwrap_or("<opaque>"),
+            status = status.as_u16(),
+            body_bytes = body.len(),
+            elapsed_ms = started_at.elapsed().as_millis() as u64,
+            "TradingView HTTP request completed",
+        );
 
         if !status.is_success() {
+            #[cfg(feature = "tracing")]
+            warn!(
+                target: "tvdata_rs::http",
+                method = preview.as_ref().map(|(method, _)| method.as_str()).unwrap_or("UNKNOWN"),
+                url = preview.as_ref().map(|(_, url)| url.as_str()).unwrap_or("<opaque>"),
+                status = status.as_u16(),
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "TradingView HTTP request returned non-success status",
+            );
             return Err(Error::ApiStatus { status, body });
         }
 
@@ -1086,8 +1246,21 @@ impl TradingViewClient {
             .get(market.as_str())
             .cloned()
         {
+            #[cfg(feature = "tracing")]
+            debug!(
+                target: "tvdata_rs::metainfo",
+                market = market.as_str(),
+                "scanner metainfo cache hit",
+            );
             return Ok(cached);
         }
+
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::metainfo",
+            market = market.as_str(),
+            "scanner metainfo cache miss",
+        );
 
         let metainfo: ScannerMetainfo = self
             .execute_json(
@@ -1099,6 +1272,14 @@ impl TradingViewClient {
             .write()
             .await
             .insert(market.as_str().to_owned(), metainfo.clone());
+
+        #[cfg(feature = "tracing")]
+        debug!(
+            target: "tvdata_rs::metainfo",
+            market = market.as_str(),
+            fields = metainfo.fields.len(),
+            "scanner metainfo cached",
+        );
 
         Ok(metainfo)
     }

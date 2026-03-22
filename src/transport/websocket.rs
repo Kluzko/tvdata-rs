@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+#[cfg(feature = "tracing")]
+use tracing::{debug, warn};
 
 use crate::client::Endpoints;
 use crate::error::{Error, Result};
@@ -16,6 +18,14 @@ pub(crate) async fn connect_socket(
     user_agent: &str,
     session_id: Option<&str>,
 ) -> Result<TradingViewWebSocket> {
+    #[cfg(feature = "tracing")]
+    debug!(
+        target: "tvdata_rs::transport",
+        url = endpoints.websocket_url().as_str(),
+        authenticated = session_id.is_some(),
+        "opening TradingView websocket",
+    );
+
     let mut ws_request = endpoints
         .websocket_url()
         .as_str()
@@ -44,8 +54,29 @@ pub(crate) async fn connect_socket(
         );
     }
 
-    let (socket, _) = connect_async(ws_request).await?;
-    Ok(socket)
+    match connect_async(ws_request).await {
+        Ok((socket, _)) => {
+            #[cfg(feature = "tracing")]
+            debug!(
+                target: "tvdata_rs::transport",
+                url = endpoints.websocket_url().as_str(),
+                authenticated = session_id.is_some(),
+                "TradingView websocket connected",
+            );
+            Ok(socket)
+        }
+        Err(error) => {
+            #[cfg(feature = "tracing")]
+            warn!(
+                target: "tvdata_rs::transport",
+                url = endpoints.websocket_url().as_str(),
+                authenticated = session_id.is_some(),
+                error = %error,
+                "TradingView websocket connection failed",
+            );
+            Err(Error::from(error))
+        }
+    }
 }
 
 pub(crate) fn next_session_id(prefix: &str) -> String {

@@ -20,6 +20,7 @@ forex = []
 crypto = []
 calendar = []
 economics = []
+tracing = ["dep:tracing"]
 
 [dependencies]
 bon = "3.9.1"
@@ -35,6 +36,7 @@ thiserror = "2.0.12"
 time = { version = "0.3.41", features = ["formatting", "macros", "parsing", "serde"] }
 tokio = { version = "1.44.2", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.26.2", features = ["rustls-tls-webpki-roots"] }
+tracing = { version = "0.1.41", optional = true }
 url = "2.5.8"
 
 [dev-dependencies]

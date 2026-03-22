@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
+#[cfg(feature = "tracing")]
+use tracing::{debug, warn};
 
 use crate::batch::{BatchResult, SymbolFailure};
 use crate::client::Endpoints;
@@ -28,6 +30,19 @@ pub(crate) async fn fetch_history_with_timeout(
     request: &HistoryRequest,
     history_timeout: Duration,
 ) -> Result<HistorySeries> {
+    #[cfg(feature = "tracing")]
+    debug!(
+        target: "tvdata_rs::history",
+        symbol = %request.symbol.as_str(),
+        interval = request.interval.as_code(),
+        bars = request.bars,
+        fetch_all = request.fetch_all,
+        session = request.session.as_code(),
+        adjustment = request.adjustment.as_code(),
+        authenticated = session_id.is_some(),
+        "starting chart websocket history fetch",
+    );
+
     let mut socket = connect_socket(endpoints, user_agent, session_id).await?;
     let requested_chunk_bars = request.bars.max(1);
 
@@ -74,7 +89,7 @@ pub(crate) async fn fetch_history_with_timeout(
     )
     .await?;
 
-    timeout(history_timeout, async {
+    let result = timeout(history_timeout, async {
         let mut bars = BTreeMap::new();
         let mut pagination = request
             .fetch_all
@@ -117,22 +132,49 @@ pub(crate) async fn fetch_history_with_timeout(
                                             json!([chart_session.as_str(), "s1", chunk_bars]),
                                         )
                                         .await?;
+                                        #[cfg(feature = "tracing")]
+                                        debug!(
+                                            target: "tvdata_rs::history",
+                                            symbol = %request.symbol.as_str(),
+                                            chunk_bars,
+                                            bars = bars.len(),
+                                            pagination_rounds = pagination.rounds,
+                                            "requested additional history chunk",
+                                        );
                                         continue;
                                     }
                                 }
 
-                                return Ok(history_series_from_bars(
-                                    request,
-                                    bars,
-                                    session_id.is_some(),
-                                ));
+                                let series =
+                                    history_series_from_bars(request, bars, session_id.is_some());
+                                #[cfg(feature = "tracing")]
+                                debug!(
+                                    target: "tvdata_rs::history",
+                                    symbol = %series.symbol.as_str(),
+                                    bars = series.bars.len(),
+                                    pagination_rounds = pagination
+                                        .as_ref()
+                                        .map(|pagination| pagination.rounds)
+                                        .unwrap_or(0),
+                                    "chart websocket history fetch completed",
+                                );
+                                return Ok(series);
                             }
                             _ => {}
                         }
                     }
                 }
                 Message::Ping(payload) => socket.send(Message::Pong(payload)).await?,
-                Message::Close(_) => break,
+                Message::Close(_) => {
+                    #[cfg(feature = "tracing")]
+                    warn!(
+                        target: "tvdata_rs::history",
+                        symbol = %request.symbol.as_str(),
+                        bars = bars.len(),
+                        "chart websocket closed before history fetch completed",
+                    );
+                    break;
+                }
                 _ => {}
             }
         }
@@ -141,8 +183,21 @@ pub(crate) async fn fetch_history_with_timeout(
             symbol: request.symbol.as_str().to_owned(),
         })
     })
-    .await
-    .map_err(|_| Error::Protocol("history session timed out"))?
+    .await;
+
+    match result {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            #[cfg(feature = "tracing")]
+            warn!(
+                target: "tvdata_rs::history",
+                symbol = %request.symbol.as_str(),
+                timeout_ms = history_timeout.as_millis() as u64,
+                "chart websocket history fetch timed out",
+            );
+            Err(Error::Protocol("history session timed out"))
+        }
+    }
 }
 
 fn history_series_from_bars(
@@ -253,7 +308,17 @@ where
     .try_collect::<Vec<_>>()
     .await?;
 
+    #[cfg(feature = "tracing")]
+    let total = series.len();
     series.sort_by_key(|(index, _)| *index);
+    #[cfg(feature = "tracing")]
+    debug!(
+        target: "tvdata_rs::history",
+        requested = total,
+        successes = total,
+        concurrency,
+        "history batch completed",
+    );
     Ok(series.into_iter().map(|(_, series)| series).collect())
 }
 
@@ -274,6 +339,8 @@ where
         return Ok(BatchResult::default());
     }
 
+    #[cfg(feature = "tracing")]
+    let requested = requests.len();
     let mut outcomes = stream::iter(requests.into_iter().enumerate().map(|(index, request)| {
         let symbol = request.symbol.clone();
         let future = fetcher(request);
@@ -302,6 +369,17 @@ where
             }
         }
     }
+
+    #[cfg(feature = "tracing")]
+    debug!(
+        target: "tvdata_rs::history",
+        requested,
+        successes = batch.successes.len(),
+        missing = batch.missing.len(),
+        failures = batch.failures.len(),
+        concurrency,
+        "detailed history batch completed",
+    );
 
     Ok(batch)
 }

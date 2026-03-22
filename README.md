@@ -61,6 +61,7 @@ control the add-on surfaces layered on top:
 - `forex`
 - `calendar`
 - `economics`
+- `tracing`
 
 Default features enable all of them.
 
@@ -71,6 +72,10 @@ Example:
 tvdata-rs = { version = "0.1.0", default-features = false, features = ["search"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
+
+The optional `tracing` feature adds structured instrumentation for request execution,
+scanner validation, batch history flows, and websocket lifecycle events without changing
+the default dependency footprint.
 
 ## Start Here
 
@@ -473,6 +478,39 @@ async fn main() -> Result<()> {
 When a shared HTTP client is injected, `tvdata-rs` still applies TradingView-specific
 request headers such as `Origin`, `Referer`, `User-Agent`, and the optional `sessionid`
 cookie. HTTP retry and timeout behavior should be configured on the shared client itself.
+
+### Observability With `tracing`
+
+Backend services that want request- and history-level telemetry can enable the optional
+`tracing` feature:
+
+```toml
+[dependencies]
+tvdata-rs = { version = "0.1.0", features = ["tracing"] }
+tracing-subscriber = "0.3"
+```
+
+```rust,no_run
+use tvdata_rs::{Result, TradingViewClient};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
+    let client = TradingViewClient::for_backend_history()?;
+    let _ = client.metainfo("america").await?;
+    Ok(())
+}
+```
+
+Current instrumentation targets include:
+
+- `tvdata_rs::http`
+- `tvdata_rs::scan`
+- `tvdata_rs::search`
+- `tvdata_rs::calendar`
+- `tvdata_rs::history`
+- `tvdata_rs::transport`
 
 ### Preset Clients
 

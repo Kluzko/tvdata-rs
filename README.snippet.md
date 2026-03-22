@@ -27,6 +27,7 @@ Optional product-surface features:
 - `forex`
 - `calendar`
 - `economics`
+- `tracing`
 
 Core scanner and history APIs remain available in the base crate.
 
@@ -152,6 +153,7 @@ async fn main() -> Result<()> {
 - explicit `AuthConfig` modes for anonymous, session, token, or combined auth
 - auth-aware `sessionid` cookies for HTTP and websocket requests
 - injecting a shared HTTP client when your application already owns transport middleware
+- optional `tracing` instrumentation for HTTP, scanner, history, and websocket flows
 - operational error helpers such as `is_rate_limited()` and `is_auth_error()`
 
 ## Caveat
