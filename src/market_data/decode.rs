@@ -1,13 +1,21 @@
-use std::collections::{BTreeMap, HashMap};
+#[cfg(feature = "equity")]
+use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use serde_json::Value;
 use time::OffsetDateTime;
 
 use crate::scanner::ScanRow;
 use crate::scanner::Ticker;
-use crate::scanner::fields::{core, fundamentals, price, technical};
+use crate::scanner::fields::core;
+#[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
+use crate::scanner::fields::{fundamentals, price, technical};
 
-use super::types::{ConversionRatesSnapshot, InstrumentIdentity, QuoteSnapshot, TechnicalSummary};
+#[cfg(feature = "equity")]
+use super::types::ConversionRatesSnapshot;
+use super::types::InstrumentIdentity;
+#[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
+use super::types::{QuoteSnapshot, TechnicalSummary};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RowDecoder {
@@ -57,6 +65,7 @@ impl RowDecoder {
         (value >= 0.0 && value.fract() == 0.0).then_some(value as u32)
     }
 
+    #[cfg(feature = "equity")]
     pub(crate) fn conversion_rates(
         &self,
         row: &ScanRow,
@@ -111,6 +120,7 @@ impl RowDecoder {
         OffsetDateTime::from_unix_timestamp(timestamp).ok()
     }
 
+    #[cfg(feature = "equity")]
     fn number_value(value: &Value) -> Option<f64> {
         match value {
             Value::Number(number) => number.as_f64(),
@@ -120,6 +130,7 @@ impl RowDecoder {
     }
 }
 
+#[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
 pub(crate) fn decode_quote(decoder: &RowDecoder, row: &ScanRow) -> QuoteSnapshot {
     QuoteSnapshot {
         instrument: decoder.identity(row),
@@ -135,6 +146,7 @@ pub(crate) fn decode_quote(decoder: &RowDecoder, row: &ScanRow) -> QuoteSnapshot
     }
 }
 
+#[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
 pub(crate) fn decode_technical(decoder: &RowDecoder, row: &ScanRow) -> TechnicalSummary {
     TechnicalSummary {
         instrument: decoder.identity(row),

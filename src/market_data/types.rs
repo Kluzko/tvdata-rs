@@ -1,5 +1,6 @@
+#[cfg(feature = "equity")]
 use std::collections::BTreeMap;
-
+#[cfg(feature = "equity")]
 use time::OffsetDateTime;
 
 use crate::scanner::Ticker;
@@ -17,6 +18,7 @@ pub struct InstrumentIdentity {
     pub industry: Option<String>,
 }
 
+#[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuoteSnapshot {
     pub instrument: InstrumentIdentity,
@@ -31,6 +33,7 @@ pub struct QuoteSnapshot {
     pub market_cap: Option<f64>,
 }
 
+#[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TechnicalSummary {
     pub instrument: InstrumentIdentity,
@@ -57,6 +60,7 @@ pub struct TechnicalSummary {
     pub cci20: Option<f64>,
 }
 
+#[cfg(feature = "equity")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversionRatesSnapshot {
     pub effective_at: Option<OffsetDateTime>,

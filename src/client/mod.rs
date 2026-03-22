@@ -12,10 +12,12 @@ use serde::de::DeserializeOwned;
 use tokio::sync::RwLock;
 use url::Url;
 
+#[cfg(feature = "calendar")]
 use crate::calendar::{
     CalendarWindowRequest, DividendCalendarEntry, DividendCalendarRequest, EarningsCalendarEntry,
     IpoCalendarEntry,
 };
+#[cfg(feature = "economics")]
 use crate::economics::{
     EconomicCalendarRequest, EconomicCalendarResponse, RawEconomicCalendarResponse,
     sanitize_calendar,
@@ -28,6 +30,7 @@ use crate::scanner::{
     Market, PartiallySupportedColumn, RawScanResponse, ScanQuery, ScanResponse,
     ScanValidationReport, ScannerMetainfo, ScreenerKind, embedded_registry,
 };
+#[cfg(feature = "search")]
 use crate::search::{
     RawSearchResponse, SearchHit, SearchRequest, SearchResponse, sanitize_response,
 };
@@ -388,10 +391,12 @@ impl TradingViewClient {
         &self.endpoints
     }
 
+    #[cfg(feature = "equity")]
     pub(crate) fn user_agent(&self) -> &str {
         &self.user_agent
     }
 
+    #[cfg(feature = "equity")]
     pub(crate) fn auth_token(&self) -> &str {
         &self.auth_token
     }
@@ -673,16 +678,19 @@ impl TradingViewClient {
     ///     Ok(())
     /// }
     /// ```
+    #[cfg(feature = "search")]
     pub async fn search(&self, request: &SearchRequest) -> Result<Vec<SearchHit>> {
         Ok(self.search_response(request).await?.hits)
     }
 
     /// Searches equities using TradingView's current `search_type=stock` filter.
+    #[cfg(feature = "search")]
     pub async fn search_equities(&self, text: impl Into<String>) -> Result<Vec<SearchHit>> {
         Ok(self.search_equities_response(text).await?.hits)
     }
 
     /// Searches equities and returns the richer v3 response envelope.
+    #[cfg(feature = "search")]
     pub async fn search_equities_response(
         &self,
         text: impl Into<String>,
@@ -691,21 +699,25 @@ impl TradingViewClient {
     }
 
     /// Searches forex instruments using TradingView's current `search_type=forex` filter.
+    #[cfg(feature = "search")]
     pub async fn search_forex(&self, text: impl Into<String>) -> Result<Vec<SearchHit>> {
         Ok(self.search_forex_response(text).await?.hits)
     }
 
     /// Searches forex instruments and returns the richer v3 response envelope.
+    #[cfg(feature = "search")]
     pub async fn search_forex_response(&self, text: impl Into<String>) -> Result<SearchResponse> {
         self.search_response(&SearchRequest::forex(text)).await
     }
 
     /// Searches crypto instruments using TradingView's current `search_type=crypto` filter.
+    #[cfg(feature = "search")]
     pub async fn search_crypto(&self, text: impl Into<String>) -> Result<Vec<SearchHit>> {
         Ok(self.search_crypto_response(text).await?.hits)
     }
 
     /// Searches crypto instruments and returns the richer v3 response envelope.
+    #[cfg(feature = "search")]
     pub async fn search_crypto_response(&self, text: impl Into<String>) -> Result<SearchResponse> {
         self.search_response(&SearchRequest::crypto(text)).await
     }
@@ -715,11 +727,13 @@ impl TradingViewClient {
     /// As of March 22, 2026, TradingView's live `symbol_search/v3` endpoint rejects
     /// `search_type=option`, so this method performs a broader search and then keeps
     /// hits that look option-related based on the returned payload.
+    #[cfg(feature = "search")]
     pub async fn search_options(&self, text: impl Into<String>) -> Result<Vec<SearchHit>> {
         Ok(self.search_options_response(text).await?.hits)
     }
 
     /// Searches option-like instruments and returns the filtered v3 response envelope.
+    #[cfg(feature = "search")]
     pub async fn search_options_response(&self, text: impl Into<String>) -> Result<SearchResponse> {
         let response = self.search_response(&SearchRequest::options(text)).await?;
         Ok(response.filtered(SearchHit::is_option_like))
@@ -747,6 +761,7 @@ impl TradingViewClient {
     ///     Ok(())
     /// }
     /// ```
+    #[cfg(feature = "search")]
     pub async fn search_response(&self, request: &SearchRequest) -> Result<SearchResponse> {
         if request.text.trim().is_empty() {
             return Err(Error::EmptySearchQuery);
@@ -781,6 +796,7 @@ impl TradingViewClient {
     ///     Ok(())
     /// }
     /// ```
+    #[cfg(feature = "economics")]
     pub async fn economic_calendar(
         &self,
         request: &EconomicCalendarRequest,
@@ -818,6 +834,7 @@ impl TradingViewClient {
     ///     Ok(())
     /// }
     /// ```
+    #[cfg(feature = "calendar")]
     pub async fn earnings_calendar(
         &self,
         request: &CalendarWindowRequest,
@@ -846,6 +863,7 @@ impl TradingViewClient {
     ///     Ok(())
     /// }
     /// ```
+    #[cfg(feature = "calendar")]
     pub async fn dividend_calendar(
         &self,
         request: &DividendCalendarRequest,
@@ -871,6 +889,7 @@ impl TradingViewClient {
     ///     Ok(())
     /// }
     /// ```
+    #[cfg(feature = "calendar")]
     pub async fn ipo_calendar(
         &self,
         request: &CalendarWindowRequest,

@@ -48,6 +48,30 @@ tvdata-rs = "0.1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
+## Feature Flags
+
+`tvdata-rs` now supports slimming higher-level product surfaces at compile time.
+
+Core scanner and history APIs remain available in the base crate. Optional features currently
+control the add-on surfaces layered on top:
+
+- `search`
+- `equity`
+- `crypto`
+- `forex`
+- `calendar`
+- `economics`
+
+Default features enable all of them.
+
+Example:
+
+```toml
+[dependencies]
+tvdata-rs = { version = "0.1.0", default-features = false, features = ["search"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
 ## Start Here
 
 If you are new to the crate, use this rule of thumb:

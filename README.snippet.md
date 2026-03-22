@@ -17,6 +17,19 @@ tvdata-rs = "0.1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
+## Feature Flags
+
+Optional product-surface features:
+
+- `search`
+- `equity`
+- `crypto`
+- `forex`
+- `calendar`
+- `economics`
+
+Core scanner and history APIs remain available in the base crate.
+
 ## Start Here
 
 Use these entry points as a rule of thumb:

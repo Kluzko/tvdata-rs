@@ -12,6 +12,15 @@ documentation = "https://docs.rs/tvdata-rs"
 keywords = ["tradingview", "market-data", "finance", "scanner", "stocks"]
 categories = ["api-bindings", "finance"]
 
+[features]
+default = ["search", "equity", "forex", "crypto", "calendar", "economics"]
+search = []
+equity = []
+forex = []
+crypto = []
+calendar = []
+economics = []
+
 [dependencies]
 bon = "3.9.1"
 futures-util = { version = "0.3.31", default-features = false, features = ["sink", "std"] }

@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use crate::scanner::Column;
-use crate::scanner::fields::{core, fundamentals, price, technical};
+use crate::scanner::fields::core;
+#[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
+use crate::scanner::fields::{fundamentals, price, technical};
 
 pub(crate) fn identity_columns() -> Vec<Column> {
     vec![
@@ -14,10 +16,12 @@ pub(crate) fn identity_columns() -> Vec<Column> {
     ]
 }
 
+#[cfg(feature = "equity")]
 pub(crate) fn classification_columns() -> Vec<Column> {
     vec![core::SECTOR, core::INDUSTRY]
 }
 
+#[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
 pub(crate) fn quote_columns() -> Vec<Column> {
     merge_columns([
         identity_columns(),
@@ -35,6 +39,7 @@ pub(crate) fn quote_columns() -> Vec<Column> {
     ])
 }
 
+#[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
 pub(crate) fn technical_columns() -> Vec<Column> {
     merge_columns([
         identity_columns(),
@@ -94,6 +99,7 @@ mod tests {
         assert!(!columns.contains(&core::INDUSTRY));
     }
 
+    #[cfg(feature = "equity")]
     #[test]
     fn classification_columns_are_opt_in() {
         let columns = classification_columns();

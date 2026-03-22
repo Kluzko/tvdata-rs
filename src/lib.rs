@@ -3,31 +3,48 @@
 #![doc = include_str!("../README.snippet.md")]
 
 pub mod batch;
-pub mod calendar;
 pub mod client;
-pub mod crypto;
-pub mod economics;
-pub mod equity;
 pub mod error;
-pub mod forex;
 pub mod history;
-mod market_data;
 pub mod metadata;
 pub mod scanner;
-pub mod search;
 pub mod time_series;
 mod transport;
 
+#[cfg(feature = "calendar")]
+pub mod calendar;
+#[cfg(feature = "crypto")]
+pub mod crypto;
+#[cfg(feature = "economics")]
+pub mod economics;
+#[cfg(feature = "equity")]
+pub mod equity;
+#[cfg(feature = "forex")]
+pub mod forex;
+#[cfg(any(
+    feature = "calendar",
+    feature = "crypto",
+    feature = "equity",
+    feature = "forex"
+))]
+mod market_data;
+#[cfg(feature = "search")]
+pub mod search;
+
 pub use batch::{BatchResult, SymbolFailure};
+#[cfg(feature = "calendar")]
 pub use calendar::{
     CalendarWindowRequest, DividendCalendarEntry, DividendCalendarRequest, DividendDateKind,
     EarningsCalendarEntry, IpoCalendarEntry,
 };
 pub use client::{Endpoints, HistoryClientConfig, RetryConfig, RetryJitter, TradingViewClient};
+#[cfg(feature = "crypto")]
 pub use crypto::{CryptoClient, CryptoOverview};
+#[cfg(feature = "economics")]
 pub use economics::{
     EconomicCalendarRequest, EconomicCalendarResponse, EconomicEvent, EconomicValue,
 };
+#[cfg(feature = "equity")]
 pub use equity::{
     AnalystForecasts, AnalystFxRates, AnalystPriceTargets, AnalystRecommendations, AnalystSummary,
     EarningsCalendar, EarningsMetrics, EquityClient, EquityOverview, EstimateHistory,
@@ -35,49 +52,72 @@ pub use equity::{
     FundamentalsSnapshot, PointInTimeFundamentals,
 };
 pub use error::{Error, ErrorKind, Result};
+#[cfg(feature = "forex")]
 pub use forex::{ForexClient, ForexOverview};
 pub use history::{
     Adjustment, Bar, BarSelectionPolicy, DailyBarRangeRequest, DailyBarRequest,
     HistoryBatchRequest, HistoryProvenance, HistoryRequest, HistorySeries, Interval,
     TradingSession,
 };
-pub use market_data::{
-    ConversionRatesSnapshot, InstrumentIdentity, QuoteSnapshot, TechnicalSummary,
-};
+#[cfg(feature = "equity")]
+pub use market_data::ConversionRatesSnapshot;
+#[cfg(any(
+    feature = "calendar",
+    feature = "crypto",
+    feature = "equity",
+    feature = "forex"
+))]
+pub use market_data::InstrumentIdentity;
+#[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
+pub use market_data::{QuoteSnapshot, TechnicalSummary};
 pub use metadata::{DataLineage, DataSourceKind, HistoryKind};
 pub use scanner::{
     HeuristicSymbolNormalizer, InstrumentRef, PartiallySupportedColumn, ScanValidationReport,
     ScannerFieldMetainfo, ScannerFieldType, ScannerMetainfo, SymbolNormalizer,
 };
+#[cfg(feature = "search")]
 pub use search::{SearchAssetClass, SearchHit, SearchRequest, SearchResponse};
 pub use time_series::{FiscalPeriod, HistoricalObservation};
 
 pub mod prelude {
     pub use crate::batch::{BatchResult, SymbolFailure};
+    #[cfg(feature = "calendar")]
     pub use crate::calendar::{
         CalendarWindowRequest, DividendCalendarEntry, DividendCalendarRequest, DividendDateKind,
         EarningsCalendarEntry, IpoCalendarEntry,
     };
     pub use crate::client::{HistoryClientConfig, RetryConfig, RetryJitter, TradingViewClient};
+    #[cfg(feature = "crypto")]
     pub use crate::crypto::{CryptoClient, CryptoOverview};
+    #[cfg(feature = "economics")]
     pub use crate::economics::{
         EconomicCalendarRequest, EconomicCalendarResponse, EconomicEvent, EconomicValue,
     };
+    #[cfg(feature = "equity")]
     pub use crate::equity::{
         AnalystForecasts, AnalystFxRates, AnalystPriceTargets, AnalystRecommendations,
         AnalystSummary, EarningsCalendar, EarningsMetrics, EquityClient, EquityOverview,
         EstimateHistory, EstimateMetrics, EstimateObservation, FundamentalMetrics,
         FundamentalObservation, FundamentalsSnapshot, PointInTimeFundamentals,
     };
+    #[cfg(feature = "forex")]
     pub use crate::forex::{ForexClient, ForexOverview};
     pub use crate::history::{
         Adjustment, Bar, BarSelectionPolicy, DailyBarRangeRequest, DailyBarRequest,
         HistoryBatchRequest, HistoryProvenance, HistoryRequest, HistorySeries, Interval,
         TradingSession,
     };
-    pub use crate::market_data::{
-        ConversionRatesSnapshot, InstrumentIdentity, QuoteSnapshot, TechnicalSummary,
-    };
+    #[cfg(feature = "equity")]
+    pub use crate::market_data::ConversionRatesSnapshot;
+    #[cfg(any(
+        feature = "calendar",
+        feature = "crypto",
+        feature = "equity",
+        feature = "forex"
+    ))]
+    pub use crate::market_data::InstrumentIdentity;
+    #[cfg(any(feature = "crypto", feature = "equity", feature = "forex"))]
+    pub use crate::market_data::{QuoteSnapshot, TechnicalSummary};
     pub use crate::metadata::{DataLineage, DataSourceKind, HistoryKind};
     pub use crate::scanner::fields;
     pub use crate::scanner::{
@@ -88,6 +128,7 @@ pub mod prelude {
         ScreenerKind, SortOrder, SortSpec, SymbolGroup, SymbolNormalizer, Symbols, Ticker,
         embedded_registry,
     };
+    #[cfg(feature = "search")]
     pub use crate::search::{SearchAssetClass, SearchHit, SearchRequest, SearchResponse};
     pub use crate::time_series::{FiscalPeriod, HistoricalObservation};
     pub use crate::{ErrorKind, Result};
