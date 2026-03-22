@@ -40,6 +40,16 @@ If you change public APIs, update:
 - `README.snippet.md`
 - relevant rustdoc examples
 - `examples/` when the change affects user-facing workflows
+- `CHANGELOG.md` when the change affects the public contract
+
+## Versioning And Stability
+
+- Current MSRV is Rust `1.85`.
+- Patch releases should avoid intentional public API breakage.
+- While the crate is still `0.x`, minor releases may contain breaking changes, but they should be explicit and documented.
+- Public, documented crate exports are treated as the stability contract. Internal transport details and non-public modules are not.
+
+If you introduce a breaking public change, add a clear changelog entry and any migration notes needed for downstream users.
 
 ## Testing Notes
 

@@ -31,6 +31,13 @@ Optional product-surface features:
 
 Core scanner and history APIs remain available in the base crate.
 
+## Stability Policy
+
+- current MSRV: Rust `1.85`
+- patch releases aim to stay non-breaking
+- while the crate is `0.x`, minor releases may still contain intentional breaking API changes
+- documented public types and methods are the public contract; internal transport and generated registry internals are not
+
 ## Start Here
 
 Use these entry points as a rule of thumb:

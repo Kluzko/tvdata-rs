@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and the project follows Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+
+- documented MSRV, stability policy, and public API contract expectations for downstream users and contributors
+
 ## [0.1.0] - 2026-03-22
 
 Initial public crate release.

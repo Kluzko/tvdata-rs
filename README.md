@@ -77,6 +77,22 @@ The optional `tracing` feature adds structured instrumentation for request execu
 scanner validation, batch history flows, and websocket lifecycle events without changing
 the default dependency footprint.
 
+## Stability Policy
+
+`tvdata-rs` targets Rust `1.85` as its current minimum supported Rust version (MSRV).
+
+Versioning expectations:
+
+- patch releases focus on fixes, docs, and non-breaking behavior improvements
+- while the crate is still `0.x`, minor releases may contain breaking API changes
+- when a breaking change is intentional, it should be called out in `CHANGELOG.md`
+
+Public contract:
+
+- documented public types, methods, and re-exports in the crate root are treated as the stable API surface
+- internal transport details, generated field-registry internals, and non-public modules are not stable
+- examples and docs should describe supported behavior, but unofficial upstream TradingView payloads can still drift over time
+
 ## Start Here
 
 If you are new to the crate, use this rule of thumb:
