@@ -119,3 +119,31 @@ fn option_like_detection_uses_multiple_clues() {
 
     assert!(hit.is_option_like());
 }
+
+#[test]
+fn search_fixture_preserves_identifiers_and_extra_fields() {
+    let raw: RawSearchResponse =
+        serde_json::from_str(include_str!("../../tests/fixtures/search/aapl_v3.json")).unwrap();
+    let response = sanitize_response(raw);
+
+    assert_eq!(response.symbols_remaining, 14);
+    assert_eq!(response.hits.len(), 2);
+    assert_eq!(response.hits[0].symbol, "AAPL");
+    assert_eq!(
+        response.hits[0].highlighted_symbol.as_deref(),
+        Some("<em>AAPL</em>")
+    );
+    assert_eq!(response.hits[0].isin.as_deref(), Some("US0378331005"));
+    assert_eq!(
+        response.hits[0]
+            .source
+            .as_ref()
+            .and_then(|source| source.id.as_deref()),
+        Some("NASDAQ")
+    );
+    assert_eq!(
+        response.hits[0].extra.get("sector").and_then(Value::as_str),
+        Some("Technology")
+    );
+    assert!(response.hits[1].is_option_like());
+}

@@ -53,3 +53,28 @@ fn sanitize_calendar_preserves_typed_values() {
     assert_eq!(response.events[0].importance, Some(2));
     assert_eq!(response.events[0].actual, Some(EconomicValue::Number(2.1)));
 }
+
+#[test]
+fn economic_calendar_fixture_preserves_extra_fields_and_value_types() {
+    let raw: RawEconomicCalendarResponse = serde_json::from_str(include_str!(
+        "../../tests/fixtures/economics/calendar_sample.json"
+    ))
+    .unwrap();
+    let response = sanitize_calendar(raw);
+
+    assert_eq!(response.status.as_deref(), Some("ok"));
+    assert_eq!(response.events.len(), 2);
+    assert_eq!(
+        response.events[0].title.as_deref(),
+        Some("Consumer Price Index")
+    );
+    assert_eq!(response.events[0].actual, Some(EconomicValue::Number(2.9)));
+    assert_eq!(
+        response.events[0].extra.get("revised"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    assert_eq!(
+        response.events[1].forecast,
+        Some(EconomicValue::Text("0.3".to_owned()))
+    );
+}

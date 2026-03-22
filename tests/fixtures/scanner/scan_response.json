@@ -1,0 +1,17 @@
+{
+  "totalCount": 2,
+  "data": [
+    {
+      "s": "NASDAQ:AAPL",
+      "d": ["AAPL", 247.99, 1.23]
+    },
+    {
+      "s": "NASDAQ:MSFT",
+      "d": ["MSFT", 418.75, null]
+    }
+  ],
+  "params": {
+    "markets": ["america"],
+    "columns": ["name", "close", "change"]
+  }
+}

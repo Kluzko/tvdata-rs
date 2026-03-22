@@ -91,4 +91,24 @@ mod tests {
                 .unwrap();
         assert!(raw.data.is_empty());
     }
+
+    #[test]
+    fn raw_response_fixture_round_trips_realistic_rows() {
+        let raw: RawScanResponse = serde_json::from_str(include_str!(
+            "../../tests/fixtures/scanner/scan_response.json"
+        ))
+        .unwrap();
+        let response = raw.into_response().unwrap();
+
+        assert_eq!(response.total_count, 2);
+        assert_eq!(response.rows[0].symbol, "NASDAQ:AAPL");
+        assert_eq!(response.rows[1].values[2], Value::Null);
+        assert_eq!(
+            response
+                .params
+                .as_ref()
+                .and_then(|params| params.get("markets")),
+            Some(&serde_json::json!(["america"]))
+        );
+    }
 }

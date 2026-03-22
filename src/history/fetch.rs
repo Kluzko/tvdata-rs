@@ -484,6 +484,22 @@ mod tests {
         assert_eq!(bars.values().next().unwrap().open, 252.105);
     }
 
+    #[test]
+    fn history_fixture_merges_timescale_updates_with_optional_volume() {
+        let payload: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/history/timescale_update.json"
+        ))
+        .unwrap();
+
+        let mut bars = BTreeMap::new();
+        merge_timescale_update(&mut bars, &payload).unwrap();
+
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars.values().next().unwrap().volume, Some(32074209.0));
+        assert_eq!(bars.values().last().unwrap().volume, None);
+        assert_eq!(bars.values().last().unwrap().close, 254.23);
+    }
+
     #[tokio::test]
     async fn batch_history_preserves_request_order() {
         let requests = vec![

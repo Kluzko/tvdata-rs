@@ -1,0 +1,42 @@
+{
+  "symbols_remaining": 14,
+  "symbols": [
+    {
+      "symbol": "<em>AAPL</em>",
+      "description": "Apple <em>Inc.</em>",
+      "type": "stock",
+      "exchange": "NASDAQ",
+      "country": "US",
+      "currency_code": "USD",
+      "currency-logoid": "country/US",
+      "provider_id": "ice",
+      "source_id": "NASDAQ",
+      "cik_code": "0000320193",
+      "isin": "US0378331005",
+      "cusip": "037833100",
+      "found_by_isin": false,
+      "found_by_cusip": false,
+      "is_primary_listing": true,
+      "logoid": "apple",
+      "logo": {
+        "style": "square",
+        "logoid": "apple"
+      },
+      "source2": {
+        "id": "NASDAQ",
+        "name": "Nasdaq Stock Market",
+        "description": "US equities"
+      },
+      "typespecs": ["common"],
+      "sector": "Technology"
+    },
+    {
+      "symbol": "AAPL*",
+      "description": "Apple warrants",
+      "type": "structured",
+      "exchange": "OTC",
+      "typespecs": ["warrant"],
+      "option-type": "call"
+    }
+  ]
+}

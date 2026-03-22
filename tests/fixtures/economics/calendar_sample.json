@@ -1,0 +1,40 @@
+{
+  "status": "ok",
+  "result": [
+    {
+      "id": "event-1",
+      "title": "Consumer Price Index",
+      "indicator": "CPI YoY",
+      "date": "2026-03-22T12:30:00Z",
+      "country": "US",
+      "currency": "USD",
+      "importance": 3,
+      "actual": 2.9,
+      "forecast": 2.8,
+      "previous": "2.7",
+      "period": "Feb",
+      "scale": "%",
+      "unit": "percentage",
+      "source": "BLS",
+      "comment": "seasonally adjusted",
+      "link": "https://example.com/cpi",
+      "revised": true
+    },
+    {
+      "id": "event-2",
+      "title": "GDP Growth Rate",
+      "indicator": "GDP QoQ",
+      "date": "2026-03-23T10:00:00Z",
+      "country": "DE",
+      "currency": "EUR",
+      "importance": 2,
+      "actual": "0.4",
+      "forecast": "0.3",
+      "previous": "0.2",
+      "period": "Q4",
+      "scale": "%",
+      "unit": "percentage",
+      "source": "Destatis"
+    }
+  ]
+}
