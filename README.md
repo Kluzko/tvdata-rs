@@ -8,7 +8,8 @@ It is designed as a library, not an application framework. The crate gives you:
 - low-level scanner access when you need precise field control
 - typed models for quotes, fundamentals, analyst data, calendars, and history
 - capability-aware validation against live TradingView scanner metainfo
-- configurable HTTP and websocket transport with retry support
+- backend-friendly initialization with grouped config, request budgets, and transport injection
+- configurable HTTP and websocket transport with retry support and typed observer hooks
 
 ## Why Use `tvdata-rs`
 
@@ -109,6 +110,16 @@ If you are new to the crate, use this rule of thumb:
 
 If you only need one thing and want the shortest path, start with the high-level facades first. Drop to the low-level scanner only when you need custom fields or custom filter logic.
 
+## Initialization Paths
+
+`tvdata-rs` currently supports three initialization styles:
+
+- `TradingViewClient::builder()` for the shortest path and library-default setup
+- `TradingViewClient::from_config(...)` with `TradingViewClientConfig` when you want grouped backend-oriented configuration
+- preset constructors like `TradingViewClient::for_backend_history()` when you want a tuned starting point without wiring the config manually
+
+Use the flat builder when you are exploring or embedding the crate in a small tool. Use grouped config when you care about explicit auth, transport ownership, pacing, websocket behavior, or observer hooks.
+
 ## Quick Start
 
 ```rust,no_run
@@ -126,6 +137,42 @@ async fn main() -> Result<()> {
         quote.close
     );
 
+    Ok(())
+}
+```
+
+### Backend-Oriented Initialization
+
+For service and ingestion code, the grouped config path is usually the cleaner entry point:
+
+```rust,no_run
+use std::time::Duration;
+
+use tvdata_rs::{
+    AuthConfig, RequestBudget, Result, TradingViewClient, TradingViewClientConfig,
+    TransportConfig,
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let config = TradingViewClientConfig::builder()
+        .transport(
+            TransportConfig::builder()
+                .timeout(Duration::from_secs(45))
+                .user_agent("my-backend/1.0")
+                .build(),
+        )
+        .auth(AuthConfig::session("your-session-id"))
+        .request_budget(
+            RequestBudget::builder()
+                .max_concurrent_http_requests(8)
+                .max_concurrent_websocket_sessions(8)
+                .build(),
+        )
+        .build();
+
+    let client = TradingViewClient::from_config(config)?;
+    let _ = client.search_equities("AAPL").await?;
     Ok(())
 }
 ```
@@ -404,6 +451,20 @@ async fn main() -> Result<()> {
 
 ## Configuration
 
+### Simple Builder vs Grouped Config
+
+`TradingViewClient::builder()` is still fully supported and remains the best simple entry point.
+
+For more structured environments, `TradingViewClientConfig` and `TransportConfig` group the initialization story into:
+
+- transport ownership and retry policy
+- auth mode
+- history defaults
+- request pacing and websocket/session caps
+- optional observer hooks
+
+If `transport_config(...)` is provided on the flat builder, it takes precedence over the flat transport fields like `timeout(...)`, `retry(...)`, `user_agent(...)`, and `http_client(...)`.
+
 ### Auth-Aware Sessions
 
 If you have a TradingView `sessionid` cookie and want auth-aware requests, pass it through the client builder:
@@ -439,47 +500,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
-
-### Grouped Client Configuration
-
-For backend integrations that prefer a more structured setup than the flat builder,
-use `TradingViewClientConfig` and `TransportConfig`:
-
-```rust,no_run
-use std::time::Duration;
-
-use tvdata_rs::{
-    AuthConfig, RequestBudget, Result, TradingViewClient, TradingViewClientConfig,
-    TransportConfig,
-};
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let config = TradingViewClientConfig::builder()
-        .transport(
-            TransportConfig::builder()
-                .timeout(Duration::from_secs(45))
-                .user_agent("my-backend/1.0")
-                .build(),
-        )
-        .auth(AuthConfig::session("your-session-id"))
-        .request_budget(
-            RequestBudget::builder()
-                .max_concurrent_http_requests(8)
-                .max_concurrent_websocket_sessions(8)
-                .build(),
-        )
-        .build();
-
-    let client = TradingViewClient::from_config(config)?;
-    let _ = client.search_equities("AAPL").await?;
-    Ok(())
-}
-```
-
-The flat builder remains supported. If `transport_config(...)` is provided on the builder,
-it takes precedence over the flat transport fields like `timeout(...)`, `retry(...)`,
-`user_agent(...)`, and `http_client(...)`.
 
 `TransportConfig` can also carry a custom `websocket_connector` for deterministic integration
 tests, tunneled websocket setups, or proxy-aware environments where you want to own the
@@ -522,7 +542,14 @@ async fn main() -> Result<()> {
 ### Shared HTTP Clients
 
 If your backend already owns a shared HTTP stack with custom middleware, proxy/TLS settings,
-or request telemetry, inject it directly instead of letting `tvdata-rs` construct a new one:
+or request telemetry, inject it directly instead of letting `tvdata-rs` construct a new one.
+
+This fits both initialization styles:
+
+- flat builder with `.http_client(...)`
+- grouped config with `TransportConfig::builder().http_client(...)`
+
+Example with the flat builder:
 
 ```rust,no_run
 use reqwest_middleware::ClientWithMiddleware;
@@ -585,6 +612,32 @@ This budget currently applies:
 - HTTP concurrency caps across scan, search, metainfo, and calendar requests
 - HTTP request pacing through `min_http_interval`
 - websocket session caps across chart-history and quote-session flows
+
+Preset constructors already use sensible request-budget defaults:
+
+- `TradingViewClient::for_backend_history()`
+- `TradingViewClient::for_research()`
+- `TradingViewClient::for_interactive()`
+
+The grouped equivalents are:
+
+- `TradingViewClientConfig::backend_history()`
+- `TradingViewClientConfig::research()`
+- `TradingViewClientConfig::interactive()`
+
+### Typed Observer Hooks
+
+If you need metrics or operational accounting without scraping logs, attach a `ClientObserver`.
+
+The observer currently receives typed events for:
+
+- HTTP request completion
+- HTTP request failure
+- websocket connection success
+- websocket connection failure
+- history batch completion summaries
+
+This is additive to `tracing`: use `tracing` for logs/spans, use `ClientObserver` for typed counters or metrics pipelines.
 
 ### Observability With `tracing`
 

@@ -8,6 +8,7 @@ It combines:
 - low-level screener access for custom TradingView queries
 - typed models for quotes, fundamentals, analyst data, calendars, and history
 - capability-aware validation against live scanner metainfo
+- simple builder setup plus grouped backend-oriented configuration
 
 ## Installation
 
@@ -49,6 +50,12 @@ Use these entry points as a rule of thumb:
 - `client.economic_calendar(...)`, `earnings_calendar(...)`, `dividend_calendar(...)`, and `ipo_calendar(...)` for calendar products
 - `client.scan(...)` when you need exact TradingView screener fields and filters
 - `client.metainfo(...)`, `validate_scan_query(...)`, and `scan_supported(...)` when you want safer scanner workflows
+
+Initialization paths:
+
+- `TradingViewClient::builder()` for the shortest default setup
+- `TradingViewClient::from_config(...)` with `TradingViewClientConfig` for grouped backend configuration
+- preset constructors like `for_backend_history()`, `for_research()`, and `for_interactive()` when you want tuned defaults
 
 ## Quick Start
 
