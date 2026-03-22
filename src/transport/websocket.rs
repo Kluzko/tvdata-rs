@@ -118,6 +118,26 @@ mod tests {
 
     use super::*;
 
+    #[allow(clippy::result_large_err)]
+    fn capture_cookie_callback(
+        cookie: Arc<Mutex<Option<String>>>,
+    ) -> impl FnOnce(
+        &Request,
+        Response,
+    ) -> std::result::Result<
+        Response,
+        tokio_tungstenite::tungstenite::http::Response<Option<String>>,
+    > {
+        move |request: &Request, response: Response| {
+            *cookie.lock().unwrap() = request
+                .headers()
+                .get("cookie")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            Ok(response)
+        }
+    }
+
     #[test]
     fn parses_concatenated_websocket_frames() {
         let frames = parse_framed_messages("~m~9~m~{\"m\":\"a\"}~m~9~m~{\"m\":\"b\"}").unwrap();
@@ -134,16 +154,9 @@ mod tests {
 
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let callback = move |request: &Request, response: Response| {
-                *cookie_clone.lock().unwrap() = request
-                    .headers()
-                    .get("cookie")
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_owned);
-                Ok(response)
-            };
-
-            let mut socket = accept_hdr_async(stream, callback).await.unwrap();
+            let mut socket = accept_hdr_async(stream, capture_cookie_callback(cookie_clone))
+                .await
+                .unwrap();
             let _ = socket.close(None).await;
         });
 
