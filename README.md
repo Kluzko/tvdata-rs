@@ -440,6 +440,47 @@ async fn main() -> Result<()> {
 }
 ```
 
+### Grouped Client Configuration
+
+For backend integrations that prefer a more structured setup than the flat builder,
+use `TradingViewClientConfig` and `TransportConfig`:
+
+```rust,no_run
+use std::time::Duration;
+
+use tvdata_rs::{
+    AuthConfig, RequestBudget, Result, TradingViewClient, TradingViewClientConfig,
+    TransportConfig,
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let config = TradingViewClientConfig::builder()
+        .transport(
+            TransportConfig::builder()
+                .timeout(Duration::from_secs(45))
+                .user_agent("my-backend/1.0")
+                .build(),
+        )
+        .auth(AuthConfig::session("your-session-id"))
+        .request_budget(
+            RequestBudget::builder()
+                .max_concurrent_http_requests(8)
+                .max_concurrent_websocket_sessions(8)
+                .build(),
+        )
+        .build();
+
+    let client = TradingViewClient::from_config(config)?;
+    let _ = client.search_equities("AAPL").await?;
+    Ok(())
+}
+```
+
+The flat builder remains supported. If `transport_config(...)` is provided on the builder,
+it takes precedence over the flat transport fields like `timeout(...)`, `retry(...)`,
+`user_agent(...)`, and `http_client(...)`.
+
 ### Retry And Endpoint Overrides
 
 ```rust,no_run
@@ -576,6 +617,12 @@ For common workload profiles, you can start from a prebuilt client preset:
 - `TradingViewClient::for_backend_history()`
 - `TradingViewClient::for_research()`
 - `TradingViewClient::for_interactive()`
+
+If you want the same preset shape in grouped form, use:
+
+- `TradingViewClientConfig::backend_history()`
+- `TradingViewClientConfig::research()`
+- `TradingViewClientConfig::interactive()`
 
 ### Failure Classification
 

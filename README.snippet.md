@@ -159,6 +159,7 @@ async fn main() -> Result<()> {
 - endpoint overrides
 - explicit `AuthConfig` modes for anonymous, session, token, or combined auth
 - auth-aware `sessionid` cookies for HTTP and websocket requests
+- grouped `TransportConfig` and `TradingViewClientConfig` for backend-oriented setup
 - optional `RequestBudget` limits for HTTP pacing and websocket session caps
 - injecting a shared HTTP client when your application already owns transport middleware
 - optional `tracing` instrumentation for HTTP, scanner, history, and websocket flows

@@ -519,6 +519,31 @@ fn builder_accepts_injected_http_client_with_invalid_retry_bounds() {
     assert!(client.is_ok());
 }
 
+#[test]
+fn transport_config_overrides_flat_transport_fields() {
+    let shared_http =
+        reqwest_middleware::ClientWithMiddleware::from(reqwest::Client::builder().build().unwrap());
+
+    let client = TradingViewClient::builder()
+        .retry(
+            RetryConfig::builder()
+                .min_retry_interval(Duration::from_secs(2))
+                .max_retry_interval(Duration::from_millis(500))
+                .build(),
+        )
+        .http_client(shared_http.clone())
+        .transport_config(
+            TransportConfig::builder()
+                .retry(RetryConfig::default())
+                .http_client(shared_http)
+                .user_agent("tvdata-rs/grouped-test")
+                .build(),
+        )
+        .build();
+
+    assert!(client.is_ok());
+}
+
 #[tokio::test]
 async fn request_budget_serializes_http_requests_when_configured() {
     let server = MockServer::start().await;
@@ -586,6 +611,58 @@ fn backend_history_preset_applies_request_budget_defaults() {
     assert_eq!(
         client.request_budget().min_http_interval,
         Some(Duration::from_millis(50))
+    );
+}
+
+#[tokio::test]
+async fn from_config_uses_grouped_auth_and_transport_settings() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/symbol_search/v3"))
+        .and(header("cookie", "sessionid=config-session"))
+        .and(header("user-agent", "tvdata-rs/config-test"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"symbols_remaining":0,"symbols":[]}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let config = TradingViewClientConfig::builder()
+        .endpoints(
+            Endpoints::default()
+                .with_symbol_search_base_url(format!("{}/symbol_search/v3", server.uri()))
+                .unwrap(),
+        )
+        .transport(
+            TransportConfig::builder()
+                .user_agent("tvdata-rs/config-test")
+                .build(),
+        )
+        .auth(AuthConfig::session("config-session"))
+        .build();
+    let client = TradingViewClient::from_config(config).unwrap();
+
+    let response = client
+        .search_response(&SearchRequest::new("AAPL"))
+        .await
+        .unwrap();
+
+    assert!(response.hits.is_empty());
+}
+
+#[test]
+fn grouped_profile_config_matches_backend_history_preset() {
+    let client =
+        TradingViewClient::from_config(TradingViewClientConfig::backend_history()).unwrap();
+
+    assert_eq!(client.history_config().default_batch_concurrency, 8);
+    assert_eq!(
+        client.request_budget().max_concurrent_http_requests,
+        Some(8)
+    );
+    assert_eq!(
+        client.request_budget().max_concurrent_websocket_sessions,
+        Some(8)
     );
 }
 

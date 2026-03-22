@@ -39,7 +39,7 @@ pub use calendar::{
 };
 pub use client::{
     AuthConfig, AuthMode, Endpoints, HistoryClientConfig, RequestBudget, RetryConfig, RetryJitter,
-    TradingViewClient,
+    TradingViewClient, TradingViewClientConfig, TransportConfig,
 };
 #[cfg(feature = "crypto")]
 pub use crypto::{CryptoClient, CryptoOverview};
@@ -91,7 +91,7 @@ pub mod prelude {
     };
     pub use crate::client::{
         AuthConfig, AuthMode, HistoryClientConfig, RequestBudget, RetryConfig, RetryJitter,
-        TradingViewClient,
+        TradingViewClient, TradingViewClientConfig, TransportConfig,
     };
     #[cfg(feature = "crypto")]
     pub use crate::crypto::{CryptoClient, CryptoOverview};

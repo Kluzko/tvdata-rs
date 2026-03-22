@@ -299,6 +299,12 @@ impl AuthConfig {
     }
 }
 
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self::anonymous()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Builder)]
 pub struct HistoryClientConfig {
     #[builder(default = default_history_session_timeout())]
@@ -352,6 +358,23 @@ impl RequestBudget {
     }
 }
 
+#[derive(Debug, Clone, Builder)]
+pub struct TransportConfig {
+    #[builder(default = default_timeout())]
+    pub timeout: Duration,
+    #[builder(default = RetryConfig::default())]
+    pub retry: RetryConfig,
+    #[builder(default = default_user_agent(), into)]
+    pub user_agent: String,
+    pub http_client: Option<ClientWithMiddleware>,
+}
+
+impl Default for TransportConfig {
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
 #[derive(Debug)]
 struct RequestBudgetState {
     http_limiter: Option<Arc<Semaphore>>,
@@ -372,6 +395,113 @@ impl RequestBudgetState {
                 .min_http_interval
                 .map(|_| Arc::new(Mutex::new(TokioInstant::now()))),
         }
+    }
+}
+
+#[derive(Debug, Clone, Builder)]
+pub struct TradingViewClientConfig {
+    #[builder(default = Endpoints::default())]
+    pub endpoints: Endpoints,
+    #[builder(default = TransportConfig::default())]
+    pub transport: TransportConfig,
+    #[builder(default = AuthConfig::default())]
+    pub auth: AuthConfig,
+    #[builder(default = HistoryClientConfig::default())]
+    pub history: HistoryClientConfig,
+    #[builder(default = RequestBudget::default())]
+    pub request_budget: RequestBudget,
+}
+
+impl Default for TradingViewClientConfig {
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
+impl TradingViewClientConfig {
+    pub fn backend_history() -> Self {
+        Self::builder()
+            .transport(
+                TransportConfig::builder()
+                    .timeout(Duration::from_secs(60))
+                    .retry(
+                        RetryConfig::builder()
+                            .max_retries(4)
+                            .min_retry_interval(Duration::from_millis(500))
+                            .max_retry_interval(Duration::from_secs(5))
+                            .build(),
+                    )
+                    .build(),
+            )
+            .history(
+                HistoryClientConfig::builder()
+                    .session_timeout(Duration::from_secs(60))
+                    .default_batch_concurrency(8)
+                    .default_session(TradingSession::Regular)
+                    .default_adjustment(Adjustment::Splits)
+                    .build(),
+            )
+            .request_budget(
+                RequestBudget::builder()
+                    .max_concurrent_http_requests(default_backend_http_budget_concurrency())
+                    .max_concurrent_websocket_sessions(
+                        default_backend_websocket_budget_concurrency(),
+                    )
+                    .min_http_interval(default_backend_http_min_interval())
+                    .build(),
+            )
+            .build()
+    }
+
+    pub fn research() -> Self {
+        Self::builder()
+            .transport(
+                TransportConfig::builder()
+                    .timeout(Duration::from_secs(45))
+                    .retry(
+                        RetryConfig::builder()
+                            .max_retries(2)
+                            .min_retry_interval(Duration::from_millis(250))
+                            .max_retry_interval(Duration::from_secs(2))
+                            .build(),
+                    )
+                    .build(),
+            )
+            .request_budget(
+                RequestBudget::builder()
+                    .max_concurrent_http_requests(default_research_http_budget_concurrency())
+                    .max_concurrent_websocket_sessions(
+                        default_research_websocket_budget_concurrency(),
+                    )
+                    .min_http_interval(default_research_http_min_interval())
+                    .build(),
+            )
+            .build()
+    }
+
+    pub fn interactive() -> Self {
+        Self::builder()
+            .transport(
+                TransportConfig::builder()
+                    .timeout(Duration::from_secs(15))
+                    .retry(
+                        RetryConfig::builder()
+                            .max_retries(1)
+                            .min_retry_interval(Duration::from_millis(100))
+                            .max_retry_interval(Duration::from_millis(500))
+                            .build(),
+                    )
+                    .build(),
+            )
+            .request_budget(
+                RequestBudget::builder()
+                    .max_concurrent_http_requests(default_interactive_http_budget_concurrency())
+                    .max_concurrent_websocket_sessions(
+                        default_interactive_websocket_budget_concurrency(),
+                    )
+                    .build(),
+            )
+            .build()
     }
 }
 
@@ -512,8 +642,22 @@ impl TradingViewClient {
         #[builder(default = default_auth_token(), into)] auth_token: String,
         #[builder(into)] session_id: Option<String>,
         auth: Option<AuthConfig>,
+        transport_config: Option<TransportConfig>,
         http_client: Option<ClientWithMiddleware>,
     ) -> Result<Self> {
+        let transport_config = transport_config.unwrap_or(TransportConfig {
+            timeout,
+            retry,
+            user_agent,
+            http_client,
+        });
+        let TransportConfig {
+            timeout,
+            retry,
+            user_agent,
+            http_client,
+        } = transport_config;
+
         let (auth_token, session_id) = auth
             .map(AuthConfig::resolve)
             .unwrap_or((auth_token, session_id));
@@ -553,77 +697,26 @@ impl TradingViewClient {
     }
 
     pub fn for_backend_history() -> Result<Self> {
-        Self::builder()
-            .timeout(Duration::from_secs(60))
-            .retry(
-                RetryConfig::builder()
-                    .max_retries(4)
-                    .min_retry_interval(Duration::from_millis(500))
-                    .max_retry_interval(Duration::from_secs(5))
-                    .build(),
-            )
-            .history_config(
-                HistoryClientConfig::builder()
-                    .session_timeout(Duration::from_secs(60))
-                    .default_batch_concurrency(8)
-                    .default_session(TradingSession::Regular)
-                    .default_adjustment(Adjustment::Splits)
-                    .build(),
-            )
-            .request_budget(
-                RequestBudget::builder()
-                    .max_concurrent_http_requests(default_backend_http_budget_concurrency())
-                    .max_concurrent_websocket_sessions(
-                        default_backend_websocket_budget_concurrency(),
-                    )
-                    .min_http_interval(default_backend_http_min_interval())
-                    .build(),
-            )
-            .build()
+        Self::from_config(TradingViewClientConfig::backend_history())
     }
 
     /// Builds a client tuned for research-style workflows with moderate retries and timeout.
     pub fn for_research() -> Result<Self> {
-        Self::builder()
-            .timeout(Duration::from_secs(45))
-            .retry(
-                RetryConfig::builder()
-                    .max_retries(2)
-                    .min_retry_interval(Duration::from_millis(250))
-                    .max_retry_interval(Duration::from_secs(2))
-                    .build(),
-            )
-            .request_budget(
-                RequestBudget::builder()
-                    .max_concurrent_http_requests(default_research_http_budget_concurrency())
-                    .max_concurrent_websocket_sessions(
-                        default_research_websocket_budget_concurrency(),
-                    )
-                    .min_http_interval(default_research_http_min_interval())
-                    .build(),
-            )
-            .build()
+        Self::from_config(TradingViewClientConfig::research())
     }
 
     /// Builds a client tuned for lower-latency interactive usage.
     pub fn for_interactive() -> Result<Self> {
+        Self::from_config(TradingViewClientConfig::interactive())
+    }
+
+    pub fn from_config(config: TradingViewClientConfig) -> Result<Self> {
         Self::builder()
-            .timeout(Duration::from_secs(15))
-            .retry(
-                RetryConfig::builder()
-                    .max_retries(1)
-                    .min_retry_interval(Duration::from_millis(100))
-                    .max_retry_interval(Duration::from_millis(500))
-                    .build(),
-            )
-            .request_budget(
-                RequestBudget::builder()
-                    .max_concurrent_http_requests(default_interactive_http_budget_concurrency())
-                    .max_concurrent_websocket_sessions(
-                        default_interactive_websocket_budget_concurrency(),
-                    )
-                    .build(),
-            )
+            .endpoints(config.endpoints)
+            .transport_config(config.transport)
+            .auth(config.auth)
+            .history_config(config.history)
+            .request_budget(config.request_budget)
             .build()
     }
 
