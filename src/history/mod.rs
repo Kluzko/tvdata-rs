@@ -7,7 +7,7 @@ use time::{Date, OffsetDateTime};
 use tracing::debug;
 
 use crate::batch::BatchResult;
-use crate::client::TradingViewClient;
+use crate::client::{ClientEvent, HistoryBatchCompletedEvent, HistoryBatchMode, TradingViewClient};
 use crate::error::Result;
 use crate::scanner::{InstrumentRef, Ticker};
 
@@ -74,12 +74,25 @@ impl TradingViewClient {
             "starting history batch",
         );
 
-        fetch::fetch_history_batch_with(
+        let series = fetch::fetch_history_batch_with(
             request.to_requests(),
             request.concurrency,
             |request| async move { self.history(&request).await },
         )
-        .await
+        .await?;
+
+        self.emit_event(ClientEvent::HistoryBatchCompleted(
+            HistoryBatchCompletedEvent {
+                requested: request.symbols.len(),
+                successes: series.len(),
+                missing: 0,
+                failures: 0,
+                concurrency: request.concurrency,
+                mode: HistoryBatchMode::Strict,
+            },
+        ));
+
+        Ok(series)
     }
 
     /// Downloads multiple OHLCV history series and returns successes, missing symbols, and
@@ -98,12 +111,25 @@ impl TradingViewClient {
             "starting detailed history batch",
         );
 
-        fetch::fetch_history_batch_detailed_with(
+        let batch = fetch::fetch_history_batch_detailed_with(
             request.to_requests(),
             request.concurrency,
             |request| async move { self.history(&request).await },
         )
-        .await
+        .await?;
+
+        self.emit_event(ClientEvent::HistoryBatchCompleted(
+            HistoryBatchCompletedEvent {
+                requested: request.symbols.len(),
+                successes: batch.successes.len(),
+                missing: batch.missing.len(),
+                failures: batch.failures.len(),
+                concurrency: request.concurrency,
+                mode: HistoryBatchMode::Detailed,
+            },
+        ));
+
+        Ok(batch)
     }
 
     /// Downloads the maximum history currently available for multiple symbols.

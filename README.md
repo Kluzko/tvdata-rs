@@ -485,6 +485,11 @@ it takes precedence over the flat transport fields like `timeout(...)`, `retry(.
 tests, tunneled websocket setups, or proxy-aware environments where you want to own the
 connection strategy instead of always using the crate default.
 
+For backend metrics and structured operational accounting without parsing logs, attach a
+typed `ClientObserver` through the flat builder or grouped client config. Current events cover
+HTTP request completion/failure, websocket connection success/failure, and history-batch
+completion summaries.
+
 ### Retry And Endpoint Overrides
 
 ```rust,no_run

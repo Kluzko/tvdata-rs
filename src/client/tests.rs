@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -96,6 +96,23 @@ impl WebSocketConnector for CountingWebSocketConnector {
         Box::pin(crate::transport::websocket::connect_socket(
             endpoints, user_agent, session_id,
         ))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct RecordingObserver {
+    events: Arc<Mutex<Vec<ClientEvent>>>,
+}
+
+impl RecordingObserver {
+    fn events(&self) -> Vec<ClientEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl ClientObserver for RecordingObserver {
+    fn on_event(&self, event: &ClientEvent) {
+        self.events.lock().unwrap().push(event.clone());
     }
 }
 
@@ -502,6 +519,40 @@ async fn search_uses_injected_http_client_and_applies_default_headers() {
     );
 }
 
+#[tokio::test]
+async fn observer_receives_http_request_completed_event() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/symbol_search/v3"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"symbols_remaining":0,"symbols":[]}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let observer = RecordingObserver::default();
+    let endpoints = Endpoints::default()
+        .with_symbol_search_base_url(format!("{}/symbol_search/v3", server.uri()))
+        .unwrap();
+    let client = TradingViewClient::builder()
+        .endpoints(endpoints)
+        .observer(Arc::new(observer.clone()))
+        .build()
+        .unwrap();
+
+    let response = client
+        .search_response(&SearchRequest::new("AAPL"))
+        .await
+        .unwrap();
+
+    assert!(response.hits.is_empty());
+    assert!(observer.events().iter().any(|event| matches!(
+        event,
+        ClientEvent::HttpRequestCompleted(HttpRequestCompletedEvent { method, status, .. })
+            if method == "GET" && *status == 200
+    )));
+}
+
 #[test]
 fn auth_config_overrides_legacy_auth_fields() {
     let client = TradingViewClient::builder()
@@ -774,6 +825,93 @@ async fn custom_websocket_connector_is_used_for_history_requests() {
     assert_eq!(connector.calls(), 1);
     assert_eq!(series.bars.len(), 1);
     assert_eq!(series.bars[0].time, datetime!(2026-03-16 13:30:00 UTC));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn observer_receives_websocket_and_history_batch_events() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+
+        while let Some(message) = socket.next().await {
+            let message = message.unwrap();
+            if let Message::Text(text) = message {
+                let payload = crate::transport::websocket::parse_framed_messages(&text)
+                    .unwrap()
+                    .remove(0)
+                    .to_owned();
+                let envelope: Value = serde_json::from_str(&payload).unwrap();
+                let method = envelope
+                    .get("m")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+
+                if method == "create_series" {
+                    send_ws_message(
+                        &mut socket,
+                        serde_json::json!({
+                            "m": "timescale_update",
+                            "p": [
+                                "cs_test",
+                                {
+                                    "s1": {
+                                        "s": [
+                                            { "i": 0, "v": [1773667800.0, 252.105, 253.885, 249.88, 252.82, 32074209.0] }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }),
+                    )
+                    .await;
+                    send_ws_message(
+                        &mut socket,
+                        serde_json::json!({ "m": "series_completed", "p": ["cs_test", "s1"] }),
+                    )
+                    .await;
+                    break;
+                }
+            }
+        }
+    });
+
+    let observer = RecordingObserver::default();
+    let endpoints = Endpoints::default()
+        .with_websocket_url(format!("ws://{address}"))
+        .unwrap();
+    let client = TradingViewClient::builder()
+        .endpoints(endpoints)
+        .observer(Arc::new(observer.clone()))
+        .build()
+        .unwrap();
+    let request = crate::HistoryBatchRequest::new(["NASDAQ:AAPL"], crate::Interval::Day1, 1);
+
+    let batch = client.history_batch_detailed(&request).await.unwrap();
+
+    assert_eq!(batch.successes.len(), 1);
+    let events = observer.events();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ClientEvent::WebSocketConnected(WebSocketConnectedEvent { .. })
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ClientEvent::HistoryBatchCompleted(HistoryBatchCompletedEvent {
+            requested,
+            successes,
+            missing,
+            failures,
+            mode,
+            ..
+        }) if *requested == 1
+            && *successes == 1
+            && *missing == 0
+            && *failures == 0
+            && *mode == HistoryBatchMode::Detailed
+    )));
     server.await.unwrap();
 }
 

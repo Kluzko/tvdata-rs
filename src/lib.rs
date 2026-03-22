@@ -38,9 +38,11 @@ pub use calendar::{
     EarningsCalendarEntry, IpoCalendarEntry,
 };
 pub use client::{
-    AuthConfig, AuthMode, DefaultWebSocketConnector, Endpoints, HistoryClientConfig, RequestBudget,
-    RetryConfig, RetryJitter, TradingViewClient, TradingViewClientConfig, TransportConfig,
-    WebSocketConnectFuture, WebSocketConnector,
+    AuthConfig, AuthMode, ClientEvent, ClientObserver, DefaultWebSocketConnector, Endpoints,
+    HistoryBatchCompletedEvent, HistoryBatchMode, HistoryClientConfig, HttpRequestCompletedEvent,
+    HttpRequestFailedEvent, RequestBudget, RetryConfig, RetryJitter, TradingViewClient,
+    TradingViewClientConfig, TransportConfig, WebSocketConnectFuture, WebSocketConnectedEvent,
+    WebSocketConnectionFailedEvent, WebSocketConnector,
 };
 #[cfg(feature = "crypto")]
 pub use crypto::{CryptoClient, CryptoOverview};
@@ -92,9 +94,11 @@ pub mod prelude {
         EarningsCalendarEntry, IpoCalendarEntry,
     };
     pub use crate::client::{
-        AuthConfig, AuthMode, DefaultWebSocketConnector, HistoryClientConfig, RequestBudget,
-        RetryConfig, RetryJitter, TradingViewClient, TradingViewClientConfig, TransportConfig,
-        WebSocketConnectFuture, WebSocketConnector,
+        AuthConfig, AuthMode, ClientEvent, ClientObserver, DefaultWebSocketConnector,
+        HistoryBatchCompletedEvent, HistoryBatchMode, HistoryClientConfig,
+        HttpRequestCompletedEvent, HttpRequestFailedEvent, RequestBudget, RetryConfig, RetryJitter,
+        TradingViewClient, TradingViewClientConfig, TransportConfig, WebSocketConnectFuture,
+        WebSocketConnectedEvent, WebSocketConnectionFailedEvent, WebSocketConnector,
     };
     #[cfg(feature = "crypto")]
     pub use crate::crypto::{CryptoClient, CryptoOverview};

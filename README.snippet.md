@@ -161,6 +161,7 @@ async fn main() -> Result<()> {
 - auth-aware `sessionid` cookies for HTTP and websocket requests
 - grouped `TransportConfig` and `TradingViewClientConfig` for backend-oriented setup
 - optional custom websocket connector injection for transport-controlled environments
+- optional typed `ClientObserver` hooks for HTTP, websocket, and batch events
 - optional `RequestBudget` limits for HTTP pacing and websocket session caps
 - injecting a shared HTTP client when your application already owns transport middleware
 - optional `tracing` instrumentation for HTTP, scanner, history, and websocket flows

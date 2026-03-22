@@ -2,9 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
-#[cfg(feature = "tracing")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bon::{Builder, bon};
 use reqwest::header::{COOKIE, HeaderValue, ORIGIN, REFERER, USER_AGENT};
@@ -152,7 +150,6 @@ fn referer(origin: &Url) -> String {
     format!("{}/", origin.as_str().trim_end_matches('/'))
 }
 
-#[cfg(feature = "tracing")]
 fn request_preview(request: &RequestBuilder) -> Option<(String, String)> {
     request.try_clone().and_then(|builder| {
         builder
@@ -365,6 +362,66 @@ impl RequestBudget {
 pub type WebSocketConnectFuture<'a> =
     Pin<Box<dyn Future<Output = Result<TradingViewWebSocket>> + Send + 'a>>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpRequestCompletedEvent {
+    pub method: String,
+    pub url: String,
+    pub status: u16,
+    pub elapsed_ms: u64,
+    pub authenticated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpRequestFailedEvent {
+    pub method: String,
+    pub url: String,
+    pub elapsed_ms: u64,
+    pub authenticated: bool,
+    pub kind: crate::error::ErrorKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSocketConnectedEvent {
+    pub url: String,
+    pub authenticated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSocketConnectionFailedEvent {
+    pub url: String,
+    pub authenticated: bool,
+    pub kind: crate::error::ErrorKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryBatchMode {
+    Strict,
+    Detailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryBatchCompletedEvent {
+    pub requested: usize,
+    pub successes: usize,
+    pub missing: usize,
+    pub failures: usize,
+    pub concurrency: usize,
+    pub mode: HistoryBatchMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientEvent {
+    HttpRequestCompleted(HttpRequestCompletedEvent),
+    HttpRequestFailed(HttpRequestFailedEvent),
+    WebSocketConnected(WebSocketConnectedEvent),
+    WebSocketConnectionFailed(WebSocketConnectionFailedEvent),
+    HistoryBatchCompleted(HistoryBatchCompletedEvent),
+}
+
+pub trait ClientObserver: std::fmt::Debug + Send + Sync {
+    fn on_event(&self, event: &ClientEvent);
+}
+
 pub trait WebSocketConnector: std::fmt::Debug + Send + Sync {
     fn connect<'a>(
         &'a self,
@@ -441,6 +498,7 @@ pub struct TradingViewClientConfig {
     pub history: HistoryClientConfig,
     #[builder(default = RequestBudget::default())]
     pub request_budget: RequestBudget,
+    pub observer: Option<Arc<dyn ClientObserver>>,
 }
 
 impl Default for TradingViewClientConfig {
@@ -657,6 +715,7 @@ pub struct TradingViewClient {
     request_budget: RequestBudget,
     request_budget_state: Arc<RequestBudgetState>,
     websocket_connector: Arc<dyn WebSocketConnector>,
+    observer: Option<Arc<dyn ClientObserver>>,
     metainfo_cache: Arc<RwLock<HashMap<String, ScannerMetainfo>>>,
 }
 
@@ -677,6 +736,7 @@ impl TradingViewClient {
         transport_config: Option<TransportConfig>,
         http_client: Option<ClientWithMiddleware>,
         websocket_connector: Option<Arc<dyn WebSocketConnector>>,
+        observer: Option<Arc<dyn ClientObserver>>,
     ) -> Result<Self> {
         let transport_config = transport_config.unwrap_or(TransportConfig {
             timeout,
@@ -729,6 +789,7 @@ impl TradingViewClient {
             request_budget_state: Arc::new(RequestBudgetState::new(&request_budget)),
             websocket_connector: websocket_connector
                 .unwrap_or_else(|| Arc::new(DefaultWebSocketConnector)),
+            observer,
             metainfo_cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -748,13 +809,23 @@ impl TradingViewClient {
     }
 
     pub fn from_config(config: TradingViewClientConfig) -> Result<Self> {
-        Self::builder()
-            .endpoints(config.endpoints)
-            .transport_config(config.transport)
-            .auth(config.auth)
-            .history_config(config.history)
-            .request_budget(config.request_budget)
-            .build()
+        match config.observer {
+            Some(observer) => Self::builder()
+                .endpoints(config.endpoints)
+                .transport_config(config.transport)
+                .auth(config.auth)
+                .history_config(config.history)
+                .request_budget(config.request_budget)
+                .observer(observer)
+                .build(),
+            None => Self::builder()
+                .endpoints(config.endpoints)
+                .transport_config(config.transport)
+                .auth(config.auth)
+                .history_config(config.history)
+                .request_budget(config.request_budget)
+                .build(),
+        }
     }
 
     pub fn endpoints(&self) -> &Endpoints {
@@ -1400,13 +1471,24 @@ impl TradingViewClient {
     async fn execute_text(&self, request: RequestBuilder) -> Result<String> {
         let _http_budget = self.acquire_http_slot().await?;
 
-        #[cfg(feature = "tracing")]
         let preview = request_preview(&request);
-        #[cfg(feature = "tracing")]
         let started_at = Instant::now();
         let response = match request.send().await {
             Ok(response) => response,
             Err(error) => {
+                self.emit_event(ClientEvent::HttpRequestFailed(HttpRequestFailedEvent {
+                    method: preview
+                        .as_ref()
+                        .map(|(method, _)| method.clone())
+                        .unwrap_or_else(|| "UNKNOWN".to_owned()),
+                    url: preview
+                        .as_ref()
+                        .map(|(_, url)| url.clone())
+                        .unwrap_or_else(|| "<opaque>".to_owned()),
+                    elapsed_ms: started_at.elapsed().as_millis() as u64,
+                    authenticated: self.session_id().is_some(),
+                    kind: crate::error::ErrorKind::Transport,
+                }));
                 #[cfg(feature = "tracing")]
                 warn!(
                     target: "tvdata_rs::http",
@@ -1423,6 +1505,19 @@ impl TradingViewClient {
         let body = match response.text().await {
             Ok(body) => body,
             Err(error) => {
+                self.emit_event(ClientEvent::HttpRequestFailed(HttpRequestFailedEvent {
+                    method: preview
+                        .as_ref()
+                        .map(|(method, _)| method.clone())
+                        .unwrap_or_else(|| "UNKNOWN".to_owned()),
+                    url: preview
+                        .as_ref()
+                        .map(|(_, url)| url.clone())
+                        .unwrap_or_else(|| "<opaque>".to_owned()),
+                    elapsed_ms: started_at.elapsed().as_millis() as u64,
+                    authenticated: self.session_id().is_some(),
+                    kind: crate::error::ErrorKind::Transport,
+                }));
                 #[cfg(feature = "tracing")]
                 warn!(
                     target: "tvdata_rs::http",
@@ -1436,6 +1531,22 @@ impl TradingViewClient {
                 return Err(Error::from(error));
             }
         };
+
+        self.emit_event(ClientEvent::HttpRequestCompleted(
+            HttpRequestCompletedEvent {
+                method: preview
+                    .as_ref()
+                    .map(|(method, _)| method.clone())
+                    .unwrap_or_else(|| "UNKNOWN".to_owned()),
+                url: preview
+                    .as_ref()
+                    .map(|(_, url)| url.clone())
+                    .unwrap_or_else(|| "<opaque>".to_owned()),
+                status: status.as_u16(),
+                elapsed_ms: started_at.elapsed().as_millis() as u64,
+                authenticated: self.session_id().is_some(),
+            },
+        ));
 
         #[cfg(feature = "tracing")]
         debug!(
@@ -1530,10 +1641,37 @@ impl TradingViewClient {
         }
     }
 
+    pub(crate) fn emit_event(&self, event: ClientEvent) {
+        if let Some(observer) = self.observer.as_ref() {
+            observer.on_event(&event);
+        }
+    }
+
     pub(crate) async fn connect_socket(&self) -> Result<TradingViewWebSocket> {
-        self.websocket_connector
+        let authenticated = self.session_id().is_some();
+        let url = self.endpoints().websocket_url().to_string();
+        let result = self
+            .websocket_connector
             .connect(self.endpoints(), &self.user_agent, self.session_id())
-            .await
+            .await;
+
+        match &result {
+            Ok(_) => self.emit_event(ClientEvent::WebSocketConnected(WebSocketConnectedEvent {
+                url,
+                authenticated,
+            })),
+            Err(error) => {
+                self.emit_event(ClientEvent::WebSocketConnectionFailed(
+                    WebSocketConnectionFailedEvent {
+                        url,
+                        authenticated,
+                        kind: error.kind(),
+                    },
+                ));
+            }
+        }
+
+        result
     }
 
     async fn cached_metainfo(&self, market: &Market) -> Result<ScannerMetainfo> {
