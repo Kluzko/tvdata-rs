@@ -1,0 +1,22 @@
+use crate::scanner::field::Column;
+
+pub const RECOMMEND_ALL: Column = Column::from_static("Recommend.All");
+pub const RECOMMEND_MA: Column = Column::from_static("Recommend.MA");
+pub const RECOMMEND_OTHER: Column = Column::from_static("Recommend.Other");
+pub const RSI: Column = Column::from_static("RSI");
+pub const RSI7: Column = Column::from_static("RSI7");
+pub const MACD: Column = Column::from_static("MACD.macd");
+pub const MACD_SIGNAL: Column = Column::from_static("MACD.signal");
+pub const MACD_HISTOGRAM: Column = Column::from_static("MACD.hist");
+pub const ADX: Column = Column::from_static("ADX");
+pub const ATR: Column = Column::from_static("ATR");
+pub const SMA20: Column = Column::from_static("SMA20");
+pub const SMA50: Column = Column::from_static("SMA50");
+pub const SMA200: Column = Column::from_static("SMA200");
+pub const EMA20: Column = Column::from_static("EMA20");
+pub const EMA50: Column = Column::from_static("EMA50");
+pub const EMA200: Column = Column::from_static("EMA200");
+pub const STOCH_K: Column = Column::from_static("Stoch.K");
+pub const STOCH_D: Column = Column::from_static("Stoch.D");
+pub const WILLIAMS_R: Column = Column::from_static("W.R");
+pub const CCI20: Column = Column::from_static("CCI20");
