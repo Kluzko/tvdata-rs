@@ -46,8 +46,8 @@ pub use market_data::{
 };
 pub use metadata::{DataLineage, DataSourceKind, HistoryKind};
 pub use scanner::{
-    InstrumentRef, PartiallySupportedColumn, ScanValidationReport, ScannerFieldMetainfo,
-    ScannerFieldType, ScannerMetainfo,
+    HeuristicSymbolNormalizer, InstrumentRef, PartiallySupportedColumn, ScanValidationReport,
+    ScannerFieldMetainfo, ScannerFieldType, ScannerMetainfo, SymbolNormalizer,
 };
 pub use search::{SearchAssetClass, SearchHit, SearchRequest, SearchResponse};
 pub use time_series::{FiscalPeriod, HistoricalObservation};
@@ -81,11 +81,12 @@ pub mod prelude {
     pub use crate::metadata::{DataLineage, DataSourceKind, HistoryKind};
     pub use crate::scanner::fields;
     pub use crate::scanner::{
-        Column, FieldRegistry, FilterCondition, FilterOperator, FilterTree, IndexSymbolDescriptor,
-        InstrumentRef, LogicalOperator, Market, MarketDescriptor, Page, PartiallySupportedColumn,
-        PriceConversion, ScanQuery, ScanResponse, ScanRow, ScanValidationReport,
-        ScannerFieldMetainfo, ScannerFieldType, ScannerMetainfo, ScreenerKind, SortOrder, SortSpec,
-        SymbolGroup, Symbols, Ticker, embedded_registry,
+        Column, FieldRegistry, FilterCondition, FilterOperator, FilterTree,
+        HeuristicSymbolNormalizer, IndexSymbolDescriptor, InstrumentRef, LogicalOperator, Market,
+        MarketDescriptor, Page, PartiallySupportedColumn, PriceConversion, ScanQuery, ScanResponse,
+        ScanRow, ScanValidationReport, ScannerFieldMetainfo, ScannerFieldType, ScannerMetainfo,
+        ScreenerKind, SortOrder, SortSpec, SymbolGroup, SymbolNormalizer, Symbols, Ticker,
+        embedded_registry,
     };
     pub use crate::search::{SearchAssetClass, SearchHit, SearchRequest, SearchResponse};
     pub use crate::time_series::{FiscalPeriod, HistoricalObservation};

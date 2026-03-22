@@ -247,6 +247,37 @@ impl From<String> for Market {
     }
 }
 
+pub trait SymbolNormalizer {
+    fn normalize(&self, instrument: &InstrumentRef) -> InstrumentRef;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeuristicSymbolNormalizer;
+
+impl HeuristicSymbolNormalizer {
+    fn normalize_symbol_for_exchange(exchange: &str, symbol: &str) -> String {
+        let uppercase = symbol.to_ascii_uppercase();
+
+        match exchange {
+            "FX" | "FX_IDC" | "FOREX" | "OANDA" | "FOREXCOM" => uppercase
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric())
+                .collect(),
+            "NYSE" | "NASDAQ" | "AMEX" | "ARCA" | "BATS" | "TSX" => uppercase.replace('-', "."),
+            _ => uppercase,
+        }
+    }
+}
+
+impl SymbolNormalizer for HeuristicSymbolNormalizer {
+    fn normalize(&self, instrument: &InstrumentRef) -> InstrumentRef {
+        InstrumentRef {
+            exchange: instrument.exchange.trim().to_ascii_uppercase(),
+            symbol: Self::normalize_symbol_for_exchange(&instrument.exchange, &instrument.symbol),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct InstrumentRef {
     pub exchange: String,
@@ -261,10 +292,19 @@ impl InstrumentRef {
         }
     }
 
+    /// Heuristic convenience constructor that normalizes common exchange-specific symbol shapes.
+    ///
+    /// Prefer [`InstrumentRef::new`] plus [`InstrumentRef::to_ticker`] when you want raw,
+    /// non-opinionated construction.
     pub fn from_exchange_symbol(exchange: impl Into<String>, symbol: impl Into<String>) -> Self {
-        let exchange = exchange.into().trim().to_ascii_uppercase();
-        let symbol = normalize_symbol_for_exchange(&exchange, symbol.into().trim());
-        Self { exchange, symbol }
+        Self::from_exchange_symbol_normalized(exchange, symbol)
+    }
+
+    pub fn from_exchange_symbol_normalized(
+        exchange: impl Into<String>,
+        symbol: impl Into<String>,
+    ) -> Self {
+        Self::new(exchange, symbol).normalized_with(&HeuristicSymbolNormalizer)
     }
 
     pub fn from_internal_us_equity(exchange: impl Into<String>, symbol: impl Into<String>) -> Self {
@@ -276,18 +316,23 @@ impl InstrumentRef {
     pub fn to_ticker(&self) -> Ticker {
         Ticker::from_parts(&self.exchange, &self.symbol)
     }
-}
 
-fn normalize_symbol_for_exchange(exchange: &str, symbol: &str) -> String {
-    let uppercase = symbol.to_ascii_uppercase();
+    pub fn normalized_with<N>(&self, normalizer: &N) -> Self
+    where
+        N: SymbolNormalizer + ?Sized,
+    {
+        normalizer.normalize(self)
+    }
 
-    match exchange {
-        "FX" | "FX_IDC" | "FOREX" | "OANDA" | "FOREXCOM" => uppercase
-            .chars()
-            .filter(|ch| ch.is_ascii_alphanumeric())
-            .collect(),
-        "NYSE" | "NASDAQ" | "AMEX" | "ARCA" | "BATS" | "TSX" => uppercase.replace('-', "."),
-        _ => uppercase,
+    pub fn to_ticker_with<N>(&self, normalizer: &N) -> Ticker
+    where
+        N: SymbolNormalizer + ?Sized,
+    {
+        self.normalized_with(normalizer).to_ticker()
+    }
+
+    pub fn to_normalized_ticker(&self) -> Ticker {
+        self.to_ticker_with(&HeuristicSymbolNormalizer)
     }
 }
 
@@ -299,8 +344,20 @@ impl Ticker {
         Self(Cow::Owned(format!("{exchange}:{symbol}")))
     }
 
+    /// Heuristic convenience constructor that normalizes common exchange-specific symbol shapes.
     pub fn from_exchange_symbol(exchange: &str, symbol: &str) -> Self {
-        InstrumentRef::from_exchange_symbol(exchange, symbol).to_ticker()
+        Self::from_exchange_symbol_normalized(exchange, symbol)
+    }
+
+    pub fn from_exchange_symbol_normalized(exchange: &str, symbol: &str) -> Self {
+        InstrumentRef::from_exchange_symbol_normalized(exchange, symbol).to_ticker()
+    }
+
+    pub fn from_exchange_symbol_with<N>(exchange: &str, symbol: &str, normalizer: &N) -> Self
+    where
+        N: SymbolNormalizer + ?Sized,
+    {
+        InstrumentRef::new(exchange, symbol).to_ticker_with(normalizer)
     }
 
     pub const fn from_static(raw: &'static str) -> Self {
@@ -365,15 +422,36 @@ impl From<InstrumentRef> for Ticker {
 mod tests {
     use super::*;
 
+    #[derive(Debug, Clone, Copy)]
+    struct CustomNormalizer;
+
+    impl SymbolNormalizer for CustomNormalizer {
+        fn normalize(&self, instrument: &InstrumentRef) -> InstrumentRef {
+            InstrumentRef::new(&instrument.exchange, instrument.symbol.replace('/', "-"))
+        }
+    }
+
     #[test]
-    fn normalizes_internal_us_equity_symbols() {
-        let ticker = Ticker::from_exchange_symbol("NYSE", "BRK-B");
+    fn raw_ticker_construction_preserves_symbol_shape() {
+        let instrument = InstrumentRef::new("NYSE", "BRK-B");
+        assert_eq!(instrument.to_ticker().as_str(), "NYSE:BRK-B");
+    }
+
+    #[test]
+    fn heuristic_normalizer_handles_common_us_equity_symbols() {
+        let ticker = InstrumentRef::new("NYSE", "BRK-B").to_normalized_ticker();
         assert_eq!(ticker.as_str(), "NYSE:BRK.B");
     }
 
     #[test]
-    fn normalizes_forex_pairs() {
-        let instrument = InstrumentRef::from_exchange_symbol("FX", "eur/usd");
-        assert_eq!(instrument.to_ticker().as_str(), "FX:EURUSD");
+    fn heuristic_normalizer_handles_common_forex_pairs() {
+        let instrument = InstrumentRef::new("FX", "eur/usd");
+        assert_eq!(instrument.to_normalized_ticker().as_str(), "FX:EURUSD");
+    }
+
+    #[test]
+    fn custom_normalizer_can_override_symbol_rules() {
+        let ticker = Ticker::from_exchange_symbol_with("FX", "eur/usd", &CustomNormalizer);
+        assert_eq!(ticker.as_str(), "FX:eur-usd");
     }
 }
