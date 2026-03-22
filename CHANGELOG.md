@@ -6,9 +6,22 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-03-22
+
+### Added
+
+- backend-oriented history helpers for daily bar selection, partial batch results, and richer symbol-level failures
+- grouped client configuration via `TradingViewClientConfig` and `TransportConfig`
+- request-budget controls for HTTP pacing, HTTP concurrency caps, and websocket session caps
+- injectable websocket connectors for history and quote-session flows
+- typed observer hooks for HTTP, websocket, and history-batch events
+- tracked offline regression fixtures for search, scanner, economics, and history payloads
+
 ### Changed
 
+- public onboarding docs now reflect the current initialization model, including grouped config, presets, budgets, connector injection, and observer hooks
 - documented MSRV, stability policy, and public API contract expectations for downstream users and contributors
+- improved backend integration ergonomics around auth, presets, transport ownership, and operational visibility
 
 ## [0.1.0] - 2026-03-22
 
