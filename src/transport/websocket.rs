@@ -110,32 +110,38 @@ pub(crate) fn parse_framed_messages(frame: &str) -> Result<Vec<&str>> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
-    use tokio_tungstenite::accept_hdr_async;
-    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+    use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 
     use crate::client::Endpoints;
 
     use super::*;
 
-    #[allow(clippy::result_large_err)]
-    fn capture_cookie_callback(
-        cookie: Arc<Mutex<Option<String>>>,
-    ) -> impl FnOnce(
-        &Request,
-        Response,
-    ) -> std::result::Result<
-        Response,
-        tokio_tungstenite::tungstenite::http::Response<Option<String>>,
-    > {
-        move |request: &Request, response: Response| {
-            *cookie.lock().unwrap() = request
-                .headers()
-                .get("cookie")
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned);
-            Ok(response)
+    async fn read_upgrade_request(stream: &mut TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert_ne!(read, 0, "client closed connection before websocket upgrade");
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
         }
+
+        String::from_utf8(request).unwrap()
+    }
+
+    fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            let (header, value) = line.split_once(':')?;
+            header
+                .trim()
+                .eq_ignore_ascii_case(name)
+                .then_some(value.trim())
+        })
     }
 
     #[test]
@@ -153,11 +159,22 @@ mod tests {
         let cookie_clone = Arc::clone(&cookie);
 
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = accept_hdr_async(stream, capture_cookie_callback(cookie_clone))
-                .await
-                .unwrap();
-            let _ = socket.close(None).await;
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_upgrade_request(&mut stream).await;
+            *cookie_clone.lock().unwrap() = header_value(&request, "cookie").map(str::to_owned);
+
+            let key = header_value(&request, "sec-websocket-key")
+                .expect("websocket upgrade request must contain Sec-WebSocket-Key");
+            let response = format!(
+                "HTTP/1.1 101 Switching Protocols\r\n\
+                 Connection: Upgrade\r\n\
+                 Upgrade: websocket\r\n\
+                 Sec-WebSocket-Accept: {}\r\n\
+                 \r\n",
+                derive_accept_key(key.as_bytes())
+            );
+
+            stream.write_all(response.as_bytes()).await.unwrap();
         });
 
         let endpoints = Endpoints::default()
