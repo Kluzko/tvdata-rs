@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-03-23
+
 ### Changed
 
 - backend history presets now use a tuned chart-history envelope with `6` concurrent websocket sessions and matching history batch concurrency

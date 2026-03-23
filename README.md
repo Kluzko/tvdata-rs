@@ -45,7 +45,7 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tvdata-rs = "0.1.1"
+tvdata-rs = "0.1.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -70,7 +70,7 @@ Example:
 
 ```toml
 [dependencies]
-tvdata-rs = { version = "0.1.1", default-features = false, features = ["search"] }
+tvdata-rs = { version = "0.1.2", default-features = false, features = ["search"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -671,7 +671,7 @@ Backend services that want request- and history-level telemetry can enable the o
 
 ```toml
 [dependencies]
-tvdata-rs = { version = "0.1.1", features = ["tracing"] }
+tvdata-rs = { version = "0.1.2", features = ["tracing"] }
 tracing-subscriber = "0.3"
 ```
 

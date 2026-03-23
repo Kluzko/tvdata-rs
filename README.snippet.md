@@ -14,7 +14,7 @@ It combines:
 
 ```toml
 [dependencies]
-tvdata-rs = "0.1.1"
+tvdata-rs = "0.1.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
