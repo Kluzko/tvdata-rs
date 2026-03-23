@@ -1,12 +1,13 @@
 mod fetch;
 mod request;
 
+use futures_util::stream::{self, StreamExt as FuturesStreamExt};
 use request::HistorySeriesMap;
 use time::{Date, OffsetDateTime};
 #[cfg(feature = "tracing")]
 use tracing::debug;
 
-use crate::batch::BatchResult;
+use crate::batch::{BatchResult, SymbolFailure};
 use crate::client::{ClientEvent, HistoryBatchCompletedEvent, HistoryBatchMode, TradingViewClient};
 use crate::error::Result;
 use crate::scanner::{InstrumentRef, Ticker};
@@ -233,44 +234,75 @@ impl TradingViewClient {
     /// Downloads daily bars for a set of instruments and selects the best bar for the requested
     /// trading date.
     pub async fn daily_bars_on(&self, request: &DailyBarRequest) -> Result<BatchResult<Bar>> {
+        if request.symbols.is_empty() {
+            return Ok(BatchResult::default());
+        }
+
+        let effective_concurrency = self.effective_history_batch_concurrency(request.concurrency);
+
         #[cfg(feature = "tracing")]
         debug!(
             target: "tvdata_rs::history",
             symbols = request.symbols.len(),
             asof = %request.asof,
             selection = ?request.selection,
-            concurrency = request.concurrency,
+            requested_concurrency = request.concurrency,
+            effective_concurrency,
             "starting daily bar selection",
         );
 
-        let history_request = daily_batch_request(
-            &request.symbols,
-            request.asof,
-            request.session,
-            request.adjustment,
-            request.concurrency,
-        );
-        let batch = self.history_batch_detailed(&history_request).await?;
+        let tickers = request
+            .symbols
+            .iter()
+            .cloned()
+            .map(Into::<Ticker>::into)
+            .collect::<Vec<_>>();
 
-        let mut selected = BatchResult {
-            missing: batch.missing,
-            failures: batch.failures,
-            ..BatchResult::default()
-        };
+        let mut outcomes = stream::iter(tickers.into_iter().enumerate().map(
+            |(index, ticker)| async move {
+                let outcome = fetch::fetch_daily_bar_with_timeout_for_client(
+                    self,
+                    &ticker,
+                    request.asof,
+                    request.selection,
+                    request.session,
+                    request.adjustment,
+                    self.history_config().session_timeout,
+                )
+                .await;
+                (index, ticker, outcome)
+            },
+        ))
+        .buffer_unordered(effective_concurrency)
+        .collect::<Vec<_>>()
+        .await;
 
-        for (ticker, series) in batch.successes {
-            let bar = match request.selection {
-                BarSelectionPolicy::ExactDate => series.bar_on(request.asof),
-                BarSelectionPolicy::LatestOnOrBefore => series.latest_on_or_before(request.asof),
-            };
+        outcomes.sort_by_key(|(index, _, _)| *index);
 
-            match bar.cloned() {
-                Some(bar) => {
+        let mut selected = BatchResult::default();
+        for (_, ticker, outcome) in outcomes {
+            match outcome {
+                Ok(Some(bar)) => {
                     selected.successes.insert(ticker, bar);
                 }
-                None => selected.missing.push(ticker),
+                Ok(None) => selected.missing.push(ticker),
+                Err(error) if error.is_symbol_error() => selected.missing.push(ticker),
+                Err(error) => selected
+                    .failures
+                    .push(SymbolFailure::from_error(ticker, error)),
             }
         }
+
+        self.emit_event(ClientEvent::HistoryBatchCompleted(
+            HistoryBatchCompletedEvent {
+                requested: request.symbols.len(),
+                successes: selected.successes.len(),
+                missing: selected.missing.len(),
+                failures: selected.failures.len(),
+                concurrency: effective_concurrency,
+                mode: HistoryBatchMode::Detailed,
+            },
+        ));
 
         #[cfg(feature = "tracing")]
         debug!(

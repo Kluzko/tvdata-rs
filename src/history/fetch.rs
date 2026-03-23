@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use futures_util::SinkExt;
 use futures_util::stream::{self, StreamExt as FuturesStreamExt, TryStreamExt};
 use serde_json::{Value, json};
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 #[cfg(feature = "tracing")]
@@ -23,8 +23,11 @@ use crate::transport::websocket::{
     next_session_id, parse_framed_messages, send_message, send_raw_frame,
 };
 
-use super::{Bar, HistoryProvenance, HistoryRequest, HistorySeries};
+use super::{Bar, BarSelectionPolicy, HistoryProvenance, HistoryRequest, HistorySeries};
 const MAX_HISTORY_PAGINATION_ROUNDS: usize = 256;
+const MIN_DAILY_BAR_INITIAL_BARS: u32 = 8;
+const MAX_DAILY_BAR_INITIAL_BARS: u32 = 64;
+const MAX_DAILY_BAR_CHUNK_BARS: u32 = 512;
 
 #[cfg(test)]
 pub(crate) async fn fetch_history_with_timeout(
@@ -383,6 +386,186 @@ pub(crate) async fn fetch_history_with_timeout_for_client(
     }
 }
 
+pub(crate) async fn fetch_daily_bar_with_timeout_for_client(
+    client: &TradingViewClient,
+    symbol: &crate::scanner::Ticker,
+    asof: Date,
+    selection: BarSelectionPolicy,
+    session: super::TradingSession,
+    adjustment: super::Adjustment,
+    history_timeout: Duration,
+) -> Result<Option<Bar>> {
+    let mut socket = client.connect_socket().await?;
+    let initial_bars = initial_daily_bar_request_bars(asof);
+
+    #[cfg(feature = "tracing")]
+    debug!(
+        target: "tvdata_rs::history",
+        symbol = %symbol.as_str(),
+        asof = %asof,
+        selection = ?selection,
+        initial_bars,
+        session = session.as_code(),
+        adjustment = adjustment.as_code(),
+        authenticated = client.session_id().is_some(),
+        "starting targeted daily bar fetch",
+    );
+
+    let chart_session = next_session_id("cs");
+    send_message(&mut socket, "set_auth_token", json!([client.auth_token()])).await?;
+    send_message(
+        &mut socket,
+        "chart_create_session",
+        json!([chart_session.as_str(), ""]),
+    )
+    .await?;
+    send_message(
+        &mut socket,
+        "resolve_symbol",
+        json!([
+            chart_session.as_str(),
+            "symbol_1",
+            format!(
+                "={{\"symbol\":\"{}\",\"adjustment\":\"{}\",\"session\":\"{}\"}}",
+                symbol.as_str(),
+                adjustment.as_code(),
+                session.as_code()
+            )
+        ]),
+    )
+    .await?;
+    send_message(
+        &mut socket,
+        "create_series",
+        json!([
+            chart_session.as_str(),
+            "s1",
+            "s1",
+            "symbol_1",
+            super::Interval::Day1.as_code(),
+            initial_bars
+        ]),
+    )
+    .await?;
+    send_message(
+        &mut socket,
+        "switch_timezone",
+        json!([chart_session.as_str(), "exchange"]),
+    )
+    .await?;
+
+    let result = timeout(history_timeout, async {
+        let mut bars = BTreeMap::new();
+        let mut pagination = DailyBarPagination::new(initial_bars);
+
+        while let Some(message) = socket.next().await {
+            let message = message?;
+            match message {
+                Message::Text(text) => {
+                    for payload in parse_framed_messages(&text)? {
+                        if let Some(heartbeat) = payload.strip_prefix("~h~") {
+                            send_raw_frame(&mut socket, format!("~h~{heartbeat}")).await?;
+                            continue;
+                        }
+
+                        let envelope: Value = match serde_json::from_str(payload) {
+                            Ok(value) => value,
+                            Err(_) => continue,
+                        };
+
+                        match envelope
+                            .get("m")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                        {
+                            "timescale_update" => merge_timescale_update(&mut bars, &envelope)?,
+                            "series_completed" => {
+                                if let Some(selected) =
+                                    resolve_daily_bar_from_bars(&bars, asof, selection)
+                                {
+                                    #[cfg(feature = "tracing")]
+                                    debug!(
+                                        target: "tvdata_rs::history",
+                                        symbol = %symbol.as_str(),
+                                        asof = %asof,
+                                        found = selected.is_some(),
+                                        bars = bars.len(),
+                                        pagination_rounds = pagination.rounds,
+                                        "targeted daily bar fetch completed",
+                                    );
+                                    return Ok(selected);
+                                }
+
+                                if bars.is_empty() {
+                                    return Err(Error::HistoryEmpty {
+                                        symbol: symbol.as_str().to_owned(),
+                                    });
+                                }
+
+                                if let Some(chunk_bars) =
+                                    pagination.next_chunk_bars(&bars, symbol.as_str())?
+                                {
+                                    send_message(
+                                        &mut socket,
+                                        "request_more_data",
+                                        json!([chart_session.as_str(), "s1", chunk_bars]),
+                                    )
+                                    .await?;
+                                    #[cfg(feature = "tracing")]
+                                    debug!(
+                                        target: "tvdata_rs::history",
+                                        symbol = %symbol.as_str(),
+                                        asof = %asof,
+                                        chunk_bars,
+                                        bars = bars.len(),
+                                        pagination_rounds = pagination.rounds,
+                                        "requested more data for targeted daily bar fetch",
+                                    );
+                                    continue;
+                                }
+
+                                return Ok(None);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Message::Ping(payload) => socket.send(Message::Pong(payload)).await?,
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+
+        if bars.is_empty() {
+            Err(Error::HistoryEmpty {
+                symbol: symbol.as_str().to_owned(),
+            })
+        } else if let Some(selected) = resolve_daily_bar_from_bars(&bars, asof, selection) {
+            Ok(selected)
+        } else {
+            Err(Error::HistoryEmpty {
+                symbol: symbol.as_str().to_owned(),
+            })
+        }
+    })
+    .await;
+
+    match result {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            #[cfg(feature = "tracing")]
+            warn!(
+                target: "tvdata_rs::history",
+                symbol = %symbol.as_str(),
+                asof = %asof,
+                timeout_ms = history_timeout.as_millis() as u64,
+                "targeted daily bar fetch timed out",
+            );
+            Err(Error::Protocol("history session timed out"))
+        }
+    }
+}
+
 fn history_series_from_bars(
     request: &HistoryRequest,
     bars: BTreeMap<i64, Bar>,
@@ -417,6 +600,102 @@ struct HistoryPagination {
     rounds: usize,
     previous_len: usize,
     previous_oldest_timestamp: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct DailyBarPagination {
+    next_chunk_bars: u32,
+    rounds: usize,
+    previous_len: usize,
+    previous_oldest_timestamp: Option<i64>,
+}
+
+impl DailyBarPagination {
+    fn new(initial_chunk_bars: u32) -> Self {
+        Self {
+            next_chunk_bars: initial_chunk_bars
+                .clamp(MIN_DAILY_BAR_INITIAL_BARS, MAX_DAILY_BAR_CHUNK_BARS),
+            rounds: 0,
+            previous_len: 0,
+            previous_oldest_timestamp: None,
+        }
+    }
+
+    fn next_chunk_bars(&mut self, bars: &BTreeMap<i64, Bar>, symbol: &str) -> Result<Option<u32>> {
+        let current_len = bars.len();
+        let current_oldest_timestamp = bars.keys().next().copied();
+
+        let made_progress = self.rounds == 0
+            || current_len > self.previous_len
+            || current_oldest_timestamp != self.previous_oldest_timestamp;
+
+        if !made_progress {
+            return Ok(None);
+        }
+
+        if self.rounds >= MAX_HISTORY_PAGINATION_ROUNDS {
+            return Err(Error::HistoryPaginationLimitExceeded {
+                symbol: symbol.to_owned(),
+                rounds: self.rounds,
+            });
+        }
+
+        self.rounds += 1;
+        self.previous_len = current_len;
+        self.previous_oldest_timestamp = current_oldest_timestamp;
+
+        let chunk_bars = self.next_chunk_bars;
+        self.next_chunk_bars = self
+            .next_chunk_bars
+            .saturating_mul(2)
+            .min(MAX_DAILY_BAR_CHUNK_BARS);
+
+        Ok(Some(chunk_bars))
+    }
+}
+
+fn initial_daily_bar_request_bars(asof: Date) -> u32 {
+    let today = OffsetDateTime::now_utc().date();
+    let days = if asof <= today {
+        (today - asof).whole_days().max(0) as u32
+    } else {
+        0
+    };
+
+    days.saturating_add(MIN_DAILY_BAR_INITIAL_BARS)
+        .clamp(MIN_DAILY_BAR_INITIAL_BARS, MAX_DAILY_BAR_INITIAL_BARS)
+}
+
+fn resolve_daily_bar_from_bars(
+    bars: &BTreeMap<i64, Bar>,
+    asof: Date,
+    selection: BarSelectionPolicy,
+) -> Option<Option<Bar>> {
+    let oldest_date = bars.values().next().map(|bar| bar.time.date())?;
+
+    match selection {
+        BarSelectionPolicy::ExactDate => {
+            if let Some(bar) = bars.values().find(|bar| bar.time.date() == asof) {
+                Some(Some(bar.clone()))
+            } else if oldest_date <= asof {
+                Some(None)
+            } else {
+                None
+            }
+        }
+        BarSelectionPolicy::LatestOnOrBefore => {
+            if oldest_date <= asof {
+                Some(
+                    bars.values()
+                        .rev()
+                        .find(|bar| bar.time.date() <= asof)
+                        .cloned(),
+                )
+            } else {
+                None
+            }
+        }
+    }
 }
 
 impl HistoryPagination {
@@ -681,6 +960,65 @@ mod tests {
         assert_eq!(bars.values().next().unwrap().volume, Some(32074209.0));
         assert_eq!(bars.values().last().unwrap().volume, None);
         assert_eq!(bars.values().last().unwrap().close, 254.23);
+    }
+
+    #[test]
+    fn daily_bar_initial_window_stays_small_for_recent_dates() {
+        let today = OffsetDateTime::now_utc().date();
+
+        assert_eq!(initial_daily_bar_request_bars(today), 8);
+        assert_eq!(
+            initial_daily_bar_request_bars(today - time::Duration::days(1)),
+            9
+        );
+        assert_eq!(
+            initial_daily_bar_request_bars(today - time::Duration::days(120)),
+            64
+        );
+    }
+
+    #[test]
+    fn resolves_targeted_daily_bars_when_history_window_is_sufficient() {
+        let mut bars = BTreeMap::new();
+        bars.insert(
+            100,
+            Bar {
+                time: datetime!(2026-03-18 00:00 UTC),
+                open: 1.0,
+                high: 2.0,
+                low: 0.5,
+                close: 1.5,
+                volume: Some(10.0),
+            },
+        );
+        bars.insert(
+            200,
+            Bar {
+                time: datetime!(2026-03-20 00:00 UTC),
+                open: 2.0,
+                high: 3.0,
+                low: 1.5,
+                close: 2.5,
+                volume: Some(12.0),
+            },
+        );
+
+        let latest = resolve_daily_bar_from_bars(
+            &bars,
+            datetime!(2026-03-19 00:00 UTC).date(),
+            BarSelectionPolicy::LatestOnOrBefore,
+        );
+        assert_eq!(
+            latest.unwrap().unwrap().time,
+            datetime!(2026-03-18 00:00 UTC)
+        );
+
+        let exact_missing = resolve_daily_bar_from_bars(
+            &bars,
+            datetime!(2026-03-19 00:00 UTC).date(),
+            BarSelectionPolicy::ExactDate,
+        );
+        assert_eq!(exact_missing, Some(None));
     }
 
     #[tokio::test]
