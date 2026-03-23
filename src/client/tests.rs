@@ -1023,13 +1023,13 @@ fn backend_history_preset_applies_request_budget_defaults() {
     );
     assert_eq!(
         client.request_budget().max_concurrent_websocket_sessions,
-        Some(4)
+        Some(6)
     );
     assert_eq!(
         client.request_budget().min_http_interval,
         Some(Duration::from_millis(50))
     );
-    assert_eq!(client.history_config().default_batch_concurrency, 4);
+    assert_eq!(client.history_config().default_batch_concurrency, 6);
 }
 
 #[tokio::test]
@@ -1073,14 +1073,14 @@ fn grouped_profile_config_matches_backend_history_preset() {
     let client =
         TradingViewClient::from_config(TradingViewClientConfig::backend_history()).unwrap();
 
-    assert_eq!(client.history_config().default_batch_concurrency, 4);
+    assert_eq!(client.history_config().default_batch_concurrency, 6);
     assert_eq!(
         client.request_budget().max_concurrent_http_requests,
         Some(8)
     );
     assert_eq!(
         client.request_budget().max_concurrent_websocket_sessions,
-        Some(4)
+        Some(6)
     );
 }
 
@@ -1141,7 +1141,7 @@ async fn backend_history_preset_uses_safe_daily_ingestion_envelope() {
         .unwrap();
 
     assert_eq!(series.len(), expected_connections);
-    assert!(max_in_flight.load(Ordering::SeqCst) <= 4);
+    assert!(max_in_flight.load(Ordering::SeqCst) <= 6);
     server.await.unwrap();
 }
 

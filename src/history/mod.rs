@@ -46,6 +46,15 @@ fn daily_batch_request(
     .concurrency(concurrency)
 }
 
+fn daily_bar_socket_chunk_size(symbols: usize, socket_concurrency: usize) -> usize {
+    if symbols == 0 {
+        return 0;
+    }
+
+    let socket_concurrency = socket_concurrency.max(1);
+    symbols.div_ceil(socket_concurrency).clamp(16, 64)
+}
+
 impl TradingViewClient {
     /// Downloads multiple OHLCV history series with bounded concurrency.
     ///
@@ -257,22 +266,27 @@ impl TradingViewClient {
             .cloned()
             .map(Into::<Ticker>::into)
             .collect::<Vec<_>>();
+        let chunk_size = daily_bar_socket_chunk_size(tickers.len(), effective_concurrency);
 
-        let mut outcomes = stream::iter(tickers.into_iter().enumerate().map(
-            |(index, ticker)| async move {
-                let outcome = fetch::fetch_daily_bar_with_timeout_for_client(
-                    self,
-                    &ticker,
-                    request.asof,
-                    request.selection,
-                    request.session,
-                    request.adjustment,
-                    self.history_config().session_timeout,
-                )
-                .await;
-                (index, ticker, outcome)
-            },
-        ))
+        let mut outcomes = stream::iter(
+            tickers
+                .chunks(chunk_size)
+                .map(|chunk| chunk.to_vec())
+                .enumerate()
+                .map(|(index, chunk)| async move {
+                    let outcome = fetch::fetch_daily_bars_batch_with_timeout_for_client(
+                        self,
+                        &chunk,
+                        request.asof,
+                        request.selection,
+                        request.session,
+                        request.adjustment,
+                        self.history_config().session_timeout,
+                    )
+                    .await;
+                    (index, chunk, outcome)
+                }),
+        )
         .buffer_unordered(effective_concurrency)
         .collect::<Vec<_>>()
         .await;
@@ -280,16 +294,27 @@ impl TradingViewClient {
         outcomes.sort_by_key(|(index, _, _)| *index);
 
         let mut selected = BatchResult::default();
-        for (_, ticker, outcome) in outcomes {
+        for (_, chunk, outcome) in outcomes {
             match outcome {
-                Ok(Some(bar)) => {
-                    selected.successes.insert(ticker, bar);
+                Ok(batch) => {
+                    selected.successes.extend(batch.successes);
+                    selected.missing.extend(batch.missing);
+                    selected.failures.extend(batch.failures);
                 }
-                Ok(None) => selected.missing.push(ticker),
-                Err(error) if error.is_symbol_error() => selected.missing.push(ticker),
-                Err(error) => selected
-                    .failures
-                    .push(SymbolFailure::from_error(ticker, error)),
+                Err(error) if error.is_symbol_error() => selected.missing.extend(chunk),
+                Err(error) => {
+                    let kind = error.kind();
+                    let retryable = error.is_retryable();
+                    let message = error.to_string();
+                    selected
+                        .failures
+                        .extend(chunk.into_iter().map(|ticker| SymbolFailure {
+                            symbol: ticker,
+                            kind,
+                            message: message.clone(),
+                            retryable,
+                        }));
+                }
             }
         }
 

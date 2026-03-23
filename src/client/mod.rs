@@ -82,7 +82,7 @@ fn default_history_session_timeout() -> Duration {
 }
 
 fn default_history_batch_concurrency() -> usize {
-    4
+    6
 }
 
 fn default_backend_http_budget_concurrency() -> usize {
@@ -90,11 +90,11 @@ fn default_backend_http_budget_concurrency() -> usize {
 }
 
 fn default_backend_history_batch_concurrency() -> usize {
-    4
+    6
 }
 
 fn default_backend_websocket_budget_concurrency() -> usize {
-    4
+    6
 }
 
 fn default_backend_http_min_interval() -> Duration {

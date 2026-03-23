@@ -57,7 +57,7 @@ Initialization paths:
 - `TradingViewClient::from_config(...)` with `TradingViewClientConfig` for grouped backend configuration
 - preset constructors like `for_backend_history()`, `for_research()`, and `for_interactive()` when you want tuned defaults
 
-`for_backend_history()` starts with a conservative chart-history envelope: `4` concurrent
+`for_backend_history()` starts with a tuned chart-history envelope: `6` concurrent
 websocket sessions and a matching default batch concurrency for large daily-bar ingestion.
 Screener-backed snapshot batch APIs use `SnapshotBatchStrategy::Auto` by default and can be
 forced into `SingleRequest` or explicit chunked modes through `SnapshotBatchConfig`.

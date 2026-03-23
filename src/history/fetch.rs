@@ -17,6 +17,7 @@ use crate::client::Endpoints;
 use crate::client::TradingViewClient;
 use crate::error::{Error, Result};
 use crate::metadata::{DataLineage, DataSourceKind, HistoryKind};
+use crate::scanner::Ticker;
 #[cfg(test)]
 use crate::transport::websocket::connect_socket;
 use crate::transport::websocket::{
@@ -386,32 +387,37 @@ pub(crate) async fn fetch_history_with_timeout_for_client(
     }
 }
 
-pub(crate) async fn fetch_daily_bar_with_timeout_for_client(
+pub(crate) async fn fetch_daily_bars_batch_with_timeout_for_client(
     client: &TradingViewClient,
-    symbol: &crate::scanner::Ticker,
+    symbols: &[Ticker],
     asof: Date,
     selection: BarSelectionPolicy,
     session: super::TradingSession,
     adjustment: super::Adjustment,
     history_timeout: Duration,
-) -> Result<Option<Bar>> {
+) -> Result<BatchResult<Bar>> {
+    if symbols.is_empty() {
+        return Ok(BatchResult::default());
+    }
+
     let mut socket = client.connect_socket().await?;
     let initial_bars = initial_daily_bar_request_bars(asof);
+    let chart_session = next_session_id("cs");
+    let active_series_id = "s1";
 
     #[cfg(feature = "tracing")]
     debug!(
         target: "tvdata_rs::history",
-        symbol = %symbol.as_str(),
+        symbols = symbols.len(),
         asof = %asof,
         selection = ?selection,
         initial_bars,
         session = session.as_code(),
         adjustment = adjustment.as_code(),
         authenticated = client.session_id().is_some(),
-        "starting targeted daily bar fetch",
+        "starting multi-symbol targeted daily bar fetch",
     );
 
-    let chart_session = next_session_id("cs");
     send_message(&mut socket, "set_auth_token", json!([client.auth_token()])).await?;
     send_message(
         &mut socket,
@@ -419,47 +425,96 @@ pub(crate) async fn fetch_daily_bar_with_timeout_for_client(
         json!([chart_session.as_str(), ""]),
     )
     .await?;
-    send_message(
-        &mut socket,
-        "resolve_symbol",
-        json!([
-            chart_session.as_str(),
-            "symbol_1",
-            format!(
-                "={{\"symbol\":\"{}\",\"adjustment\":\"{}\",\"session\":\"{}\"}}",
-                symbol.as_str(),
-                adjustment.as_code(),
-                session.as_code()
-            )
-        ]),
-    )
-    .await?;
-    send_message(
-        &mut socket,
-        "create_series",
-        json!([
-            chart_session.as_str(),
-            "s1",
-            "s1",
-            "symbol_1",
-            super::Interval::Day1.as_code(),
-            initial_bars
-        ]),
-    )
-    .await?;
-    send_message(
-        &mut socket,
-        "switch_timezone",
-        json!([chart_session.as_str(), "exchange"]),
-    )
-    .await?;
+    let mut batch = BatchResult::default();
+    let mut created_series = false;
 
-    let result = timeout(history_timeout, async {
+    for (index, symbol) in symbols.iter().enumerate() {
+        let symbol_alias = format!("symbol_{}", index + 1);
+        let series_version = format!("series_{}", index + 1);
+
+        send_message(
+            &mut socket,
+            "resolve_symbol",
+            json!([
+                chart_session.as_str(),
+                symbol_alias.as_str(),
+                format!(
+                    "={{\"symbol\":\"{}\",\"adjustment\":\"{}\",\"session\":\"{}\"}}",
+                    symbol.as_str(),
+                    adjustment.as_code(),
+                    session.as_code()
+                )
+            ]),
+        )
+        .await?;
+
+        if !created_series {
+            send_message(
+                &mut socket,
+                "create_series",
+                json!([
+                    chart_session.as_str(),
+                    active_series_id,
+                    active_series_id,
+                    symbol_alias.as_str(),
+                    super::Interval::Day1.as_code(),
+                    initial_bars
+                ]),
+            )
+            .await?;
+            send_message(
+                &mut socket,
+                "switch_timezone",
+                json!([chart_session.as_str(), "exchange"]),
+            )
+            .await?;
+            created_series = true;
+        } else {
+            send_message(
+                &mut socket,
+                "modify_series",
+                json!([
+                    chart_session.as_str(),
+                    active_series_id,
+                    series_version.as_str(),
+                    symbol_alias.as_str(),
+                    super::Interval::Day1.as_code(),
+                    ""
+                ]),
+            )
+            .await?;
+        }
+
         let mut bars = BTreeMap::new();
         let mut pagination = DailyBarPagination::new(initial_bars);
 
-        while let Some(message) = socket.next().await {
-            let message = message?;
+        'symbol: loop {
+            let message = match timeout(history_timeout, socket.next()).await {
+                Ok(Some(message)) => message?,
+                Ok(None) => {
+                    batch
+                        .failures
+                        .extend(symbols[index..].iter().cloned().map(|ticker| {
+                            SymbolFailure::from_error(
+                                ticker,
+                                Error::Protocol("daily bar batch closed before completion"),
+                            )
+                        }));
+                    return Ok(batch);
+                }
+                Err(_) => {
+                    batch
+                        .failures
+                        .extend(symbols[index..].iter().cloned().map(|ticker| {
+                            SymbolFailure::from_error(
+                                ticker,
+                                Error::Protocol("history session timed out"),
+                            )
+                        }));
+                    return Ok(batch);
+                }
+            };
+
             match message {
                 Message::Text(text) => {
                     for payload in parse_framed_messages(&text)? {
@@ -480,26 +535,28 @@ pub(crate) async fn fetch_daily_bar_with_timeout_for_client(
                         {
                             "timescale_update" => merge_timescale_update(&mut bars, &envelope)?,
                             "series_completed" => {
+                                let Some(series_id) = completed_series_id(&envelope) else {
+                                    continue;
+                                };
+                                if series_id != active_series_id {
+                                    continue;
+                                }
+
                                 if let Some(selected) =
                                     resolve_daily_bar_from_bars(&bars, asof, selection)
                                 {
-                                    #[cfg(feature = "tracing")]
-                                    debug!(
-                                        target: "tvdata_rs::history",
-                                        symbol = %symbol.as_str(),
-                                        asof = %asof,
-                                        found = selected.is_some(),
-                                        bars = bars.len(),
-                                        pagination_rounds = pagination.rounds,
-                                        "targeted daily bar fetch completed",
-                                    );
-                                    return Ok(selected);
+                                    match selected {
+                                        Some(bar) => {
+                                            batch.successes.insert(symbol.clone(), bar);
+                                        }
+                                        None => batch.missing.push(symbol.clone()),
+                                    }
+                                    break 'symbol;
                                 }
 
                                 if bars.is_empty() {
-                                    return Err(Error::HistoryEmpty {
-                                        symbol: symbol.as_str().to_owned(),
-                                    });
+                                    batch.missing.push(symbol.clone());
+                                    break 'symbol;
                                 }
 
                                 if let Some(chunk_bars) =
@@ -508,62 +565,45 @@ pub(crate) async fn fetch_daily_bar_with_timeout_for_client(
                                     send_message(
                                         &mut socket,
                                         "request_more_data",
-                                        json!([chart_session.as_str(), "s1", chunk_bars]),
+                                        json!([
+                                            chart_session.as_str(),
+                                            active_series_id,
+                                            chunk_bars
+                                        ]),
                                     )
                                     .await?;
-                                    #[cfg(feature = "tracing")]
-                                    debug!(
-                                        target: "tvdata_rs::history",
-                                        symbol = %symbol.as_str(),
-                                        asof = %asof,
-                                        chunk_bars,
-                                        bars = bars.len(),
-                                        pagination_rounds = pagination.rounds,
-                                        "requested more data for targeted daily bar fetch",
-                                    );
                                     continue;
                                 }
 
-                                return Ok(None);
+                                batch.missing.push(symbol.clone());
+                                break 'symbol;
+                            }
+                            "symbol_error" => {
+                                batch.missing.push(symbol.clone());
+                                break 'symbol;
                             }
                             _ => {}
                         }
                     }
                 }
                 Message::Ping(payload) => socket.send(Message::Pong(payload)).await?,
-                Message::Close(_) => break,
+                Message::Close(_) => {
+                    batch
+                        .failures
+                        .extend(symbols[index..].iter().cloned().map(|ticker| {
+                            SymbolFailure::from_error(
+                                ticker,
+                                Error::Protocol("daily bar batch closed before completion"),
+                            )
+                        }));
+                    return Ok(batch);
+                }
                 _ => {}
             }
         }
-
-        if bars.is_empty() {
-            Err(Error::HistoryEmpty {
-                symbol: symbol.as_str().to_owned(),
-            })
-        } else if let Some(selected) = resolve_daily_bar_from_bars(&bars, asof, selection) {
-            Ok(selected)
-        } else {
-            Err(Error::HistoryEmpty {
-                symbol: symbol.as_str().to_owned(),
-            })
-        }
-    })
-    .await;
-
-    match result {
-        Ok(outcome) => outcome,
-        Err(_) => {
-            #[cfg(feature = "tracing")]
-            warn!(
-                target: "tvdata_rs::history",
-                symbol = %symbol.as_str(),
-                asof = %asof,
-                timeout_ms = history_timeout.as_millis() as u64,
-                "targeted daily bar fetch timed out",
-            );
-            Err(Error::Protocol("history session timed out"))
-        }
     }
+
+    Ok(batch)
 }
 
 fn history_series_from_bars(
@@ -696,6 +736,14 @@ fn resolve_daily_bar_from_bars(
             }
         }
     }
+}
+
+fn completed_series_id(envelope: &Value) -> Option<&str> {
+    envelope
+        .get("p")
+        .and_then(Value::as_array)
+        .and_then(|parts| parts.get(1))
+        .and_then(Value::as_str)
 }
 
 impl HistoryPagination {
@@ -1298,6 +1346,123 @@ mod tests {
         assert_eq!(series.bars.len(), 3);
         assert_eq!(series.bars[0].time, datetime!(1970-01-01 0:01:40 UTC));
         assert_eq!(series.bars[2].time, datetime!(1970-01-01 0:05:00 UTC));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn daily_bar_batch_fetches_multiple_symbols_over_one_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+
+            assert_eq!(
+                read_client_method(&mut socket).await.as_deref(),
+                Some("set_auth_token")
+            );
+            assert_eq!(
+                read_client_method(&mut socket).await.as_deref(),
+                Some("chart_create_session")
+            );
+            assert_eq!(
+                read_client_method(&mut socket).await.as_deref(),
+                Some("resolve_symbol")
+            );
+            assert_eq!(
+                read_client_method(&mut socket).await.as_deref(),
+                Some("create_series")
+            );
+            assert_eq!(
+                read_client_method(&mut socket).await.as_deref(),
+                Some("switch_timezone")
+            );
+
+            send_server_message(
+                &mut socket,
+                serde_json::json!({
+                    "m": "timescale_update",
+                    "p": [
+                        "cs_test",
+                        {
+                            "s1": {
+                                "s": [
+                                    { "i": 0, "v": [1773360000.0, 10.0, 11.0, 9.0, 10.5, 100.0] }
+                                ]
+                            },
+                        }
+                    ]
+                }),
+            )
+            .await;
+            send_server_message(
+                &mut socket,
+                serde_json::json!({ "m": "series_completed", "p": ["cs_test", "s1"] }),
+            )
+            .await;
+
+            assert_eq!(
+                read_client_method(&mut socket).await.as_deref(),
+                Some("resolve_symbol")
+            );
+            assert_eq!(
+                read_client_method(&mut socket).await.as_deref(),
+                Some("modify_series")
+            );
+
+            send_server_message(
+                &mut socket,
+                serde_json::json!({
+                    "m": "timescale_update",
+                    "p": [
+                        "cs_test",
+                        {
+                            "s1": {
+                                "s": [
+                                    { "i": 0, "v": [1773360000.0, 20.0, 21.0, 19.0, 20.5, 200.0] }
+                                ]
+                            }
+                        }
+                    ]
+                }),
+            )
+            .await;
+            send_server_message(
+                &mut socket,
+                serde_json::json!({ "m": "series_completed", "p": ["cs_test", "s1"] }),
+            )
+            .await;
+
+            socket.close(None).await.unwrap();
+        });
+
+        let endpoints = Endpoints::default()
+            .with_websocket_url(format!("ws://{address}"))
+            .unwrap();
+        let client = TradingViewClient::builder()
+            .endpoints(endpoints)
+            .build()
+            .unwrap();
+        let symbols = vec![
+            Ticker::from_static("NASDAQ:AAPL"),
+            Ticker::from_static("NASDAQ:MSFT"),
+        ];
+
+        let batch = fetch_daily_bars_batch_with_timeout_for_client(
+            &client,
+            &symbols,
+            datetime!(2026-03-13 00:00 UTC).date(),
+            BarSelectionPolicy::LatestOnOrBefore,
+            TradingSession::Regular,
+            Adjustment::Splits,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(batch.successes.len(), 2);
+        assert!(batch.missing.is_empty());
+        assert!(batch.failures.is_empty());
         server.await.unwrap();
     }
 

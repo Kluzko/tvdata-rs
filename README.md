@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
         .request_budget(
             RequestBudget::builder()
                 .max_concurrent_http_requests(8)
-                .max_concurrent_websocket_sessions(4)
+                .max_concurrent_websocket_sessions(6)
                 .build(),
         )
         .build();
@@ -569,7 +569,7 @@ async fn main() -> Result<()> {
         .request_budget(
             RequestBudget::builder()
                 .max_concurrent_http_requests(8)
-                .max_concurrent_websocket_sessions(4)
+                .max_concurrent_websocket_sessions(6)
                 .min_http_interval(std::time::Duration::from_millis(50))
                 .build(),
         )
@@ -600,7 +600,7 @@ async fn main() -> Result<()> {
         .request_budget(
             RequestBudget::builder()
                 .max_concurrent_http_requests(8)
-                .max_concurrent_websocket_sessions(4)
+                .max_concurrent_websocket_sessions(6)
                 .min_http_interval(Duration::from_millis(50))
                 .build(),
         )
@@ -636,13 +636,13 @@ Preset constructors already use sensible request-budget defaults:
 - `TradingViewClient::for_research()`
 - `TradingViewClient::for_interactive()`
 
-`for_backend_history()` is intentionally conservative for chart-history workloads: it starts
-with `4` concurrent websocket sessions and a matching default history batch concurrency so
-large daily-bar jobs stay below the crate's safer request envelope unless you opt into more.
+`for_backend_history()` is tuned for chart-history workloads: it starts with `6` concurrent
+websocket sessions and a matching default history batch concurrency.
 
-In live benchmarking on `2026-03-23`, `daily_bars_on` stayed stable at websocket concurrency `2`
-and `4`, while `6` increased failures materially. That is why the backend-history preset remains
-at `4` instead of pushing higher by default.
+In live benchmarking on `2026-03-23`, the current targeted `daily_bars_on` path stayed stable at
+websocket concurrency `6` on both `250` and `1000` U.S. equities, while `7`, `8`, and `10`
+started introducing symbol-level failures. That makes `6` the highest concurrency that this crate
+currently treats as the safe default for backend daily-bar ingestion.
 
 The grouped equivalents are:
 

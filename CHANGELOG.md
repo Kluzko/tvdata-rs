@@ -8,16 +8,16 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Changed
 
-- backend history presets now use a more conservative chart-history envelope for large daily-bar batches
+- backend history presets now use a tuned chart-history envelope with `6` concurrent websocket sessions and matching history batch concurrency
 - history batch execution now caps effective concurrency to the configured websocket request budget
 - auto snapshot batching now keeps current 1000-symbol public snapshot surfaces on a single request, while still slicing larger payloads
-- `daily_bars_on` now uses a targeted daily-bar fetch path with small-first windows and progressive expansion instead of materializing full mini-series up front
+- `daily_bars_on` now reuses chart websocket sessions across symbol chunks with sequential `modify_series` batching, small-first windows, and progressive expansion instead of opening one socket per symbol
 
 ### Added
 
 - regression coverage for websocket-capped history batching and backend-history daily ingestion envelopes
 - configurable snapshot batch planning with `Auto`, `SingleRequest`, and explicit chunked modes
-- a live batch benchmark example for comparing snapshot and `daily_bars_on` throughput envelopes
+- a live batch benchmark example for comparing snapshot and `daily_bars_on` throughput envelopes, including configurable history concurrency lists
 
 ## [0.1.1] - 2026-03-22
 

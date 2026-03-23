@@ -118,54 +118,49 @@ fn snapshot_cases() -> Result<Vec<SnapshotCase>> {
 }
 
 fn history_cases() -> Result<Vec<HistoryCase>> {
-    Ok(vec![
-        HistoryCase {
-            name: "history-2",
-            client: TradingViewClient::from_config(
+    history_concurrencies()
+        .into_iter()
+        .map(|concurrency| {
+            let name = format!("history-{concurrency}");
+            let client = TradingViewClient::from_config(
                 TradingViewClientConfig::builder()
                     .history(
                         HistoryClientConfig::builder()
-                            .default_batch_concurrency(2)
+                            .default_batch_concurrency(concurrency)
                             .default_session(TradingSession::Regular)
                             .default_adjustment(Adjustment::Splits)
                             .build(),
                     )
                     .request_budget(
                         RequestBudget::builder()
-                            .max_concurrent_websocket_sessions(2)
+                            .max_concurrent_websocket_sessions(concurrency)
                             .max_concurrent_http_requests(8)
                             .min_http_interval(std::time::Duration::from_millis(50))
                             .build(),
                     )
                     .build(),
-            )?,
-        },
-        HistoryCase {
-            name: "history-4",
-            client: TradingViewClient::for_backend_history()?,
-        },
-        HistoryCase {
-            name: "history-6",
-            client: TradingViewClient::from_config(
-                TradingViewClientConfig::builder()
-                    .history(
-                        HistoryClientConfig::builder()
-                            .default_batch_concurrency(6)
-                            .default_session(TradingSession::Regular)
-                            .default_adjustment(Adjustment::Splits)
-                            .build(),
-                    )
-                    .request_budget(
-                        RequestBudget::builder()
-                            .max_concurrent_websocket_sessions(6)
-                            .max_concurrent_http_requests(8)
-                            .min_http_interval(std::time::Duration::from_millis(50))
-                            .build(),
-                    )
-                    .build(),
-            )?,
-        },
-    ])
+            )?;
+
+            Ok(HistoryCase {
+                name: Box::leak(name.into_boxed_str()),
+                client,
+            })
+        })
+        .collect()
+}
+
+fn history_concurrencies() -> Vec<usize> {
+    std::env::var("TVDATA_BENCH_HISTORY_CONCURRENCIES")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .filter_map(|item| item.trim().parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| vec![2, 4, 6])
 }
 
 async fn load_symbols(client: &TradingViewClient, count: usize) -> Result<Vec<String>> {
