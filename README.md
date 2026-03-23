@@ -149,8 +149,8 @@ For service and ingestion code, the grouped config path is usually the cleaner e
 use std::time::Duration;
 
 use tvdata_rs::{
-    AuthConfig, RequestBudget, Result, TradingViewClient, TradingViewClientConfig,
-    TransportConfig,
+    AuthConfig, RequestBudget, Result, SnapshotBatchConfig, SnapshotBatchStrategy,
+    TradingViewClient, TradingViewClientConfig, TransportConfig,
 };
 
 #[tokio::main]
@@ -163,6 +163,11 @@ async fn main() -> Result<()> {
                 .build(),
         )
         .auth(AuthConfig::session("your-session-id"))
+        .snapshot_batch(
+            SnapshotBatchConfig::builder()
+                .strategy(SnapshotBatchStrategy::Auto)
+                .build(),
+        )
         .request_budget(
             RequestBudget::builder()
                 .max_concurrent_http_requests(8)
@@ -613,6 +618,18 @@ This budget currently applies:
 - HTTP request pacing through `min_http_interval`
 - websocket session caps across chart-history and quote-session flows
 
+For screener-backed snapshot batches (`quotes_batch`, `fundamentals_batch`, `technical_summaries`,
+`analyst_summaries`, `overviews`), the client also applies a snapshot batch planner. The planner
+can run as:
+
+- `SnapshotBatchStrategy::Auto`
+- `SnapshotBatchStrategy::SingleRequest`
+- `SnapshotBatchStrategy::Chunked { chunk_size, max_concurrent_requests }`
+
+`Auto` is the default and is tuned to keep current 1000-symbol public snapshot surfaces on a
+single request when that is the better overall tradeoff, while switching to sliced concurrent
+requests for larger payloads.
+
 Preset constructors already use sensible request-budget defaults:
 
 - `TradingViewClient::for_backend_history()`
@@ -622,6 +639,10 @@ Preset constructors already use sensible request-budget defaults:
 `for_backend_history()` is intentionally conservative for chart-history workloads: it starts
 with `4` concurrent websocket sessions and a matching default history batch concurrency so
 large daily-bar jobs stay below the crate's safer request envelope unless you opt into more.
+
+In live benchmarking on `2026-03-23`, `daily_bars_on` stayed stable at websocket concurrency `2`
+and `4`, while `6` increased failures materially. That is why the backend-history preset remains
+at `4` instead of pushing higher by default.
 
 The grouped equivalents are:
 
@@ -757,6 +778,7 @@ Examples live in [examples/](/Users/jakubkluzniak/dev/tvdata-rs/examples) and co
 - metainfo and capability-aware scans
 - history
 - macro and corporate calendars
+- live batch strategy benchmarking via [live_batch_bench.rs](/Users/jakubkluzniak/dev/tvdata-rs/examples/live_batch_bench.rs)
 
 The field registry is embedded so low-level scanner workflows can still operate with a stable local field catalog even when live metainfo is unavailable.
 

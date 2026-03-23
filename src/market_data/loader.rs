@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use futures_util::stream::{self, StreamExt as FuturesStreamExt, TryStreamExt};
+
 use crate::batch::{BatchResult, SymbolFailure};
 use crate::client::TradingViewClient;
 use crate::error::{Error, Result};
@@ -50,19 +52,8 @@ impl<'a> SnapshotLoader<'a> {
             return Ok(Vec::new());
         }
 
-        let mut seen = HashSet::new();
-        let tickers = requested
-            .iter()
-            .filter(|ticker| seen.insert(ticker.as_str().to_owned()))
-            .cloned()
-            .collect::<Vec<_>>();
-        let query = self
-            .base_query
-            .clone()
-            .tickers(tickers)
-            .select(columns)
-            .page(0, seen.len())?;
-        let rows = self.client.scan(&query).await?.rows;
+        let tickers = dedupe_tickers(&requested);
+        let rows = self.fetch_rows(tickers, columns).await?;
         let rows_by_symbol = rows
             .into_iter()
             .map(|row| (row.symbol.clone(), row))
@@ -95,58 +86,8 @@ impl<'a> SnapshotLoader<'a> {
             return Ok(BatchResult::default());
         }
 
-        let mut seen = HashSet::new();
-        let tickers = requested
-            .iter()
-            .filter(|ticker| seen.insert(ticker.as_str().to_owned()))
-            .cloned()
-            .collect::<Vec<_>>();
-        let query = self
-            .base_query
-            .clone()
-            .tickers(tickers.clone())
-            .select(columns)
-            .page(0, seen.len())?;
-
-        let response = match self.client.scan(&query).await {
-            Ok(response) => response,
-            Err(error) => {
-                let kind = error.kind();
-                let retryable = error.is_retryable();
-                let message = error.to_string();
-                let failures = tickers
-                    .into_iter()
-                    .map(|ticker| SymbolFailure {
-                        symbol: ticker,
-                        kind,
-                        message: message.clone(),
-                        retryable,
-                    })
-                    .collect();
-                return Ok(BatchResult {
-                    failures,
-                    ..BatchResult::default()
-                });
-            }
-        };
-
-        let rows_by_symbol = response
-            .rows
-            .into_iter()
-            .map(|row| (row.symbol.clone(), row))
-            .collect::<HashMap<_, _>>();
-
-        let mut batch = BatchResult::default();
-        for ticker in tickers {
-            match rows_by_symbol.get(ticker.as_str()).cloned() {
-                Some(row) => {
-                    batch.successes.insert(ticker, row);
-                }
-                None => batch.missing.push(ticker),
-            }
-        }
-
-        Ok(batch)
+        let tickers = dedupe_tickers(&requested);
+        self.fetch_rows_detailed(tickers, columns).await
     }
 
     pub(crate) async fn fetch_market_quotes(
@@ -196,4 +137,186 @@ impl<'a> SnapshotLoader<'a> {
             .map(|row| decode_quote(&decoder, row))
             .collect::<Vec<_>>())
     }
+}
+
+fn dedupe_tickers(requested: &[Ticker]) -> Vec<Ticker> {
+    let mut seen = HashSet::new();
+    requested
+        .iter()
+        .filter(|ticker| seen.insert(ticker.as_str().to_owned()))
+        .cloned()
+        .collect::<Vec<_>>()
+}
+
+impl<'a> SnapshotLoader<'a> {
+    async fn fetch_rows(&self, tickers: Vec<Ticker>, columns: Vec<Column>) -> Result<Vec<ScanRow>> {
+        let plan = self
+            .client
+            .plan_snapshot_batch(tickers.len(), columns.len());
+        if plan.concurrency == 1 || tickers.len() <= plan.chunk_size {
+            return self.fetch_rows_single(tickers, columns).await;
+        }
+
+        let client = self.client;
+        let base_query = self.base_query.clone();
+        let mut chunked_rows = stream::iter(
+            tickers
+                .chunks(plan.chunk_size)
+                .map(|chunk| chunk.to_vec())
+                .enumerate()
+                .map(|(index, chunk)| {
+                    let columns = columns.clone();
+                    let base_query = base_query.clone();
+                    async move {
+                        fetch_chunk_rows(client, base_query, chunk, columns)
+                            .await
+                            .map(|rows| (index, rows))
+                    }
+                }),
+        )
+        .buffer_unordered(plan.concurrency)
+        .try_collect::<Vec<_>>()
+        .await?;
+
+        chunked_rows.sort_by_key(|(index, _)| *index);
+        Ok(chunked_rows
+            .into_iter()
+            .flat_map(|(_, rows)| rows)
+            .collect::<Vec<_>>())
+    }
+
+    async fn fetch_rows_single(
+        &self,
+        tickers: Vec<Ticker>,
+        columns: Vec<Column>,
+    ) -> Result<Vec<ScanRow>> {
+        fetch_chunk_rows(self.client, self.base_query.clone(), tickers, columns).await
+    }
+
+    async fn fetch_rows_detailed(
+        &self,
+        tickers: Vec<Ticker>,
+        columns: Vec<Column>,
+    ) -> Result<BatchResult<ScanRow>> {
+        let plan = self
+            .client
+            .plan_snapshot_batch(tickers.len(), columns.len());
+        if plan.concurrency == 1 || tickers.len() <= plan.chunk_size {
+            return self.fetch_rows_detailed_single(tickers, columns).await;
+        }
+
+        let client = self.client;
+        let base_query = self.base_query.clone();
+        let mut outcomes = stream::iter(
+            tickers
+                .chunks(plan.chunk_size)
+                .map(|chunk| chunk.to_vec())
+                .enumerate()
+                .map(|(index, chunk)| {
+                    let columns = columns.clone();
+                    let base_query = base_query.clone();
+                    async move {
+                        let outcome =
+                            fetch_chunk_rows(client, base_query, chunk.clone(), columns).await;
+                        (index, chunk, outcome)
+                    }
+                }),
+        )
+        .buffer_unordered(plan.concurrency)
+        .collect::<Vec<_>>()
+        .await;
+
+        outcomes.sort_by_key(|(index, _, _)| *index);
+
+        let mut batch = BatchResult::default();
+        for (_, chunk, outcome) in outcomes {
+            match outcome {
+                Ok(rows) => {
+                    let rows_by_symbol = rows
+                        .into_iter()
+                        .map(|row| (row.symbol.clone(), row))
+                        .collect::<HashMap<_, _>>();
+                    for ticker in chunk {
+                        match rows_by_symbol.get(ticker.as_str()).cloned() {
+                            Some(row) => {
+                                batch.successes.insert(ticker, row);
+                            }
+                            None => batch.missing.push(ticker),
+                        }
+                    }
+                }
+                Err(error) => {
+                    let kind = error.kind();
+                    let retryable = error.is_retryable();
+                    let message = error.to_string();
+                    batch
+                        .failures
+                        .extend(chunk.into_iter().map(|ticker| SymbolFailure {
+                            symbol: ticker,
+                            kind,
+                            message: message.clone(),
+                            retryable,
+                        }));
+                }
+            }
+        }
+
+        Ok(batch)
+    }
+
+    async fn fetch_rows_detailed_single(
+        &self,
+        tickers: Vec<Ticker>,
+        columns: Vec<Column>,
+    ) -> Result<BatchResult<ScanRow>> {
+        let response = match self.fetch_rows_single(tickers.clone(), columns).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                let kind = error.kind();
+                let retryable = error.is_retryable();
+                let message = error.to_string();
+                let failures = tickers
+                    .into_iter()
+                    .map(|ticker| SymbolFailure {
+                        symbol: ticker,
+                        kind,
+                        message: message.clone(),
+                        retryable,
+                    })
+                    .collect();
+                return Ok(BatchResult {
+                    failures,
+                    ..BatchResult::default()
+                });
+            }
+        };
+
+        let rows_by_symbol = response
+            .into_iter()
+            .map(|row| (row.symbol.clone(), row))
+            .collect::<HashMap<_, _>>();
+
+        let mut batch = BatchResult::default();
+        for ticker in tickers {
+            match rows_by_symbol.get(ticker.as_str()).cloned() {
+                Some(row) => {
+                    batch.successes.insert(ticker, row);
+                }
+                None => batch.missing.push(ticker),
+            }
+        }
+
+        Ok(batch)
+    }
+}
+
+async fn fetch_chunk_rows(
+    client: &TradingViewClient,
+    base_query: ScanQuery,
+    tickers: Vec<Ticker>,
+    columns: Vec<Column>,
+) -> Result<Vec<ScanRow>> {
+    let limit = tickers.len();
+    let query = base_query.tickers(tickers).select(columns).page(0, limit)?;
+    client.scan(&query).await.map(|response| response.rows)
 }

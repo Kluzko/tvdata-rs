@@ -121,6 +121,22 @@ fn default_interactive_websocket_budget_concurrency() -> usize {
     2
 }
 
+fn default_snapshot_chunk_size() -> usize {
+    250
+}
+
+fn default_snapshot_chunk_concurrency() -> usize {
+    4
+}
+
+fn default_snapshot_auto_single_request_limit() -> usize {
+    1_000
+}
+
+fn default_snapshot_auto_target_cells() -> usize {
+    25_000
+}
+
 fn default_user_agent() -> String {
     DEFAULT_USER_AGENT.to_owned()
 }
@@ -363,6 +379,59 @@ impl RequestBudget {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SnapshotBatchStrategy {
+    #[default]
+    Auto,
+    SingleRequest,
+    Chunked {
+        chunk_size: usize,
+        max_concurrent_requests: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Builder)]
+pub struct SnapshotBatchConfig {
+    #[builder(default)]
+    pub strategy: SnapshotBatchStrategy,
+}
+
+impl Default for SnapshotBatchConfig {
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
+impl SnapshotBatchConfig {
+    fn validate(&self) -> Result<()> {
+        match self.strategy {
+            SnapshotBatchStrategy::Auto | SnapshotBatchStrategy::SingleRequest => Ok(()),
+            SnapshotBatchStrategy::Chunked {
+                chunk_size,
+                max_concurrent_requests,
+            } => {
+                if chunk_size == 0 {
+                    return Err(Error::InvalidSnapshotBatchConfig {
+                        field: "chunk_size",
+                    });
+                }
+                if max_concurrent_requests == 0 {
+                    return Err(Error::InvalidSnapshotBatchConfig {
+                        field: "max_concurrent_requests",
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SnapshotBatchPlan {
+    pub(crate) chunk_size: usize,
+    pub(crate) concurrency: usize,
+}
+
 pub type WebSocketConnectFuture<'a> =
     Pin<Box<dyn Future<Output = Result<TradingViewWebSocket>> + Send + 'a>>;
 
@@ -500,6 +569,8 @@ pub struct TradingViewClientConfig {
     pub auth: AuthConfig,
     #[builder(default = HistoryClientConfig::default())]
     pub history: HistoryClientConfig,
+    #[builder(default = SnapshotBatchConfig::default())]
+    pub snapshot_batch: SnapshotBatchConfig,
     #[builder(default = RequestBudget::default())]
     pub request_budget: RequestBudget,
     pub observer: Option<Arc<dyn ClientObserver>>,
@@ -716,6 +787,7 @@ pub struct TradingViewClient {
     auth_token: String,
     session_id: Option<String>,
     history_config: HistoryClientConfig,
+    snapshot_batch_config: SnapshotBatchConfig,
     request_budget: RequestBudget,
     request_budget_state: Arc<RequestBudgetState>,
     websocket_connector: Arc<dyn WebSocketConnector>,
@@ -732,6 +804,8 @@ impl TradingViewClient {
         #[builder(default = default_timeout())] timeout: Duration,
         #[builder(default = RetryConfig::default())] retry: RetryConfig,
         #[builder(default = HistoryClientConfig::default())] history_config: HistoryClientConfig,
+        #[builder(default = SnapshotBatchConfig::default())]
+        snapshot_batch_config: SnapshotBatchConfig,
         #[builder(default = RequestBudget::default())] request_budget: RequestBudget,
         #[builder(default = default_user_agent(), into)] user_agent: String,
         #[builder(default = default_auth_token(), into)] auth_token: String,
@@ -762,6 +836,7 @@ impl TradingViewClient {
             .unwrap_or((auth_token, session_id));
 
         request_budget.validate()?;
+        snapshot_batch_config.validate()?;
 
         let http = if let Some(http_client) = http_client {
             http_client
@@ -789,6 +864,7 @@ impl TradingViewClient {
             auth_token,
             session_id,
             history_config,
+            snapshot_batch_config,
             request_budget: request_budget.clone(),
             request_budget_state: Arc::new(RequestBudgetState::new(&request_budget)),
             websocket_connector: websocket_connector
@@ -819,6 +895,7 @@ impl TradingViewClient {
                 .transport_config(config.transport)
                 .auth(config.auth)
                 .history_config(config.history)
+                .snapshot_batch_config(config.snapshot_batch)
                 .request_budget(config.request_budget)
                 .observer(observer)
                 .build(),
@@ -827,6 +904,7 @@ impl TradingViewClient {
                 .transport_config(config.transport)
                 .auth(config.auth)
                 .history_config(config.history)
+                .snapshot_batch_config(config.snapshot_batch)
                 .request_budget(config.request_budget)
                 .build(),
         }
@@ -848,6 +926,10 @@ impl TradingViewClient {
         &self.history_config
     }
 
+    pub fn snapshot_batch_config(&self) -> &SnapshotBatchConfig {
+        &self.snapshot_batch_config
+    }
+
     pub fn request_budget(&self) -> &RequestBudget {
         &self.request_budget
     }
@@ -861,6 +943,48 @@ impl TradingViewClient {
             .max_concurrent_websocket_sessions
             .map(|cap| requested.min(cap))
             .unwrap_or(requested)
+    }
+
+    pub(crate) fn plan_snapshot_batch(&self, symbols: usize, columns: usize) -> SnapshotBatchPlan {
+        let effective_http_cap = self
+            .request_budget
+            .max_concurrent_http_requests
+            .unwrap_or(default_snapshot_chunk_concurrency());
+        let cap = effective_http_cap.max(1);
+
+        match self.snapshot_batch_config.strategy {
+            SnapshotBatchStrategy::SingleRequest => SnapshotBatchPlan {
+                chunk_size: symbols.max(1),
+                concurrency: 1,
+            },
+            SnapshotBatchStrategy::Chunked {
+                chunk_size,
+                max_concurrent_requests,
+            } => SnapshotBatchPlan {
+                chunk_size: chunk_size.max(1),
+                concurrency: max_concurrent_requests.min(cap).max(1),
+            },
+            SnapshotBatchStrategy::Auto => {
+                let cells = symbols.saturating_mul(columns.max(1));
+                let auto_chunk_size = (default_snapshot_auto_target_cells() / columns.max(1))
+                    .clamp(100, default_snapshot_chunk_size());
+
+                if symbols <= default_snapshot_chunk_size()
+                    || (symbols <= default_snapshot_auto_single_request_limit()
+                        && cells <= default_snapshot_auto_target_cells())
+                {
+                    SnapshotBatchPlan {
+                        chunk_size: symbols.max(1),
+                        concurrency: 1,
+                    }
+                } else {
+                    SnapshotBatchPlan {
+                        chunk_size: auto_chunk_size.max(1),
+                        concurrency: default_snapshot_chunk_concurrency().min(cap).max(1),
+                    }
+                }
+            }
+        }
     }
 
     /// Executes a low-level TradingView screener query.

@@ -59,6 +59,8 @@ Initialization paths:
 
 `for_backend_history()` starts with a conservative chart-history envelope: `4` concurrent
 websocket sessions and a matching default batch concurrency for large daily-bar ingestion.
+Screener-backed snapshot batch APIs use `SnapshotBatchStrategy::Auto` by default and can be
+forced into `SingleRequest` or explicit chunked modes through `SnapshotBatchConfig`.
 
 ## Quick Start
 
@@ -170,6 +172,7 @@ async fn main() -> Result<()> {
 - explicit `AuthConfig` modes for anonymous, session, token, or combined auth
 - auth-aware `sessionid` cookies for HTTP and websocket requests
 - grouped `TransportConfig` and `TradingViewClientConfig` for backend-oriented setup
+- `SnapshotBatchConfig` with `Auto`, `SingleRequest`, and chunked batch modes for large snapshot workloads
 - optional custom websocket connector injection for transport-controlled environments
 - optional typed `ClientObserver` hooks for HTTP, websocket, and batch events
 - optional `RequestBudget` limits for HTTP pacing and websocket session caps

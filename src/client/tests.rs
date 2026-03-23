@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use serde_json::json;
 use time::macros::datetime;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -71,6 +72,113 @@ impl Respond for DelayedSearchResponder {
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
 
         ResponseTemplate::new(200).set_body_string(r#"{"symbols_remaining":0,"symbols":[]}"#)
+    }
+}
+
+#[derive(Clone)]
+struct DynamicScanResponder {
+    calls: Arc<AtomicUsize>,
+}
+
+impl DynamicScanResponder {
+    fn new() -> Self {
+        Self {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Respond for DynamicScanResponder {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+
+        let payload: Value = serde_json::from_slice(&request.body).unwrap();
+        let columns = payload
+            .get("columns")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let tickers = payload
+            .get("symbols")
+            .and_then(|symbols| symbols.get("tickers"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let rows = tickers
+            .into_iter()
+            .filter_map(|ticker| ticker.as_str().map(str::to_owned))
+            .map(|ticker| {
+                let symbol = ticker.clone();
+                let values = columns
+                    .iter()
+                    .map(|column| {
+                        scan_value_for_column(column.as_str().unwrap_or_default(), &ticker)
+                    })
+                    .collect::<Vec<_>>();
+                json!({
+                    "s": symbol,
+                    "d": values,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        ResponseTemplate::new(200).set_body_json(json!({
+            "totalCount": rows.len(),
+            "data": rows,
+        }))
+    }
+}
+
+fn scan_value_for_column(column: &str, ticker: &str) -> Value {
+    match column {
+        "name" => json!(ticker.rsplit(':').next().unwrap_or(ticker)),
+        "market" => json!("america"),
+        "exchange" => json!(ticker.split(':').next().unwrap_or("NASDAQ")),
+        "currency" => json!("USD"),
+        "country" => json!("US"),
+        "type" => json!("stock"),
+        "open" => json!(100.0),
+        "high" => json!(101.0),
+        "low" => json!(99.0),
+        "close" => json!(100.5),
+        "change" => json!(1.25),
+        "change_abs" => json!(1.0),
+        "volume" => json!(1_000_000.0),
+        "relative_volume_10d_calc" => json!(1.1),
+        "market_cap_basic" => json!(1_000_000_000.0),
+        "Recommend.All" => json!(0.4),
+        "RSI" => json!(57.0),
+        "MACD.macd" => json!(1.2),
+        "SMA50" => json!(98.0),
+        "SMA200" => json!(91.0),
+        "EMA20" => json!(99.5),
+        "ADX" => json!(24.0),
+        "ATR" => json!(2.0),
+        "price_target_average" => json!(120.0),
+        "price_target_high" => json!(130.0),
+        "price_target_low" => json!(110.0),
+        "price_target_median" => json!(119.0),
+        "recommendation_buy" => json!(12),
+        "recommendation_hold" => json!(8),
+        "recommendation_sell" => json!(1),
+        "recommendation_mark" => json!(1.8),
+        "recommendation_over" => json!(4),
+        "recommendation_under" => json!(1),
+        "recommendation_total" => json!(26),
+        "price_earnings_ttm" => json!(24.0),
+        "price_book_fq" => json!(8.0),
+        "price_sales_current" => json!(7.5),
+        "total_revenue" => json!(420_000_000_000.0),
+        "net_income" => json!(95_000_000_000.0),
+        "earnings_per_share_diluted_ttm" => json!(6.2),
+        "return_on_equity" => json!(0.33),
+        "debt_to_equity" => json!(0.55),
+        _ => Value::Null,
     }
 }
 
@@ -333,6 +441,136 @@ async fn search_equities_response_uses_stock_search_type() {
 
     let response = client.search_equities_response("AAPL").await.unwrap();
     assert!(response.hits.is_empty());
+}
+
+#[tokio::test]
+async fn snapshot_batch_single_request_strategy_uses_one_scan_call() {
+    let server = MockServer::start().await;
+    let responder = DynamicScanResponder::new();
+    Mock::given(method("POST"))
+        .and(path("/global/scan"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let endpoints = Endpoints::default()
+        .with_scanner_base_url(server.uri())
+        .unwrap();
+    let client = TradingViewClient::builder()
+        .endpoints(endpoints)
+        .snapshot_batch_config(
+            SnapshotBatchConfig::builder()
+                .strategy(SnapshotBatchStrategy::SingleRequest)
+                .build(),
+        )
+        .build()
+        .unwrap();
+
+    let symbols = (0..1000)
+        .map(|index| format!("NASDAQ:S{index:04}"))
+        .collect::<Vec<_>>();
+    let batch = client.equity().quotes_batch(symbols).await.unwrap();
+
+    assert_eq!(batch.successes.len(), 1000);
+    assert_eq!(responder.calls(), 1);
+}
+
+#[tokio::test]
+async fn snapshot_batch_chunked_strategy_slices_large_batches() {
+    let server = MockServer::start().await;
+    let responder = DynamicScanResponder::new();
+    Mock::given(method("POST"))
+        .and(path("/global/scan"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let endpoints = Endpoints::default()
+        .with_scanner_base_url(server.uri())
+        .unwrap();
+    let client = TradingViewClient::builder()
+        .endpoints(endpoints)
+        .snapshot_batch_config(
+            SnapshotBatchConfig::builder()
+                .strategy(SnapshotBatchStrategy::Chunked {
+                    chunk_size: 250,
+                    max_concurrent_requests: 4,
+                })
+                .build(),
+        )
+        .build()
+        .unwrap();
+
+    let symbols = (0..600)
+        .map(|index| format!("NASDAQ:C{index:04}"))
+        .collect::<Vec<_>>();
+    let batch = client.equity().quotes_batch(symbols).await.unwrap();
+
+    assert_eq!(batch.successes.len(), 600);
+    assert_eq!(responder.calls(), 3);
+}
+
+#[tokio::test]
+async fn snapshot_batch_auto_strategy_keeps_1000_quote_batches_single_request() {
+    let server = MockServer::start().await;
+    let responder = DynamicScanResponder::new();
+    Mock::given(method("POST"))
+        .and(path("/global/scan"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let endpoints = Endpoints::default()
+        .with_scanner_base_url(server.uri())
+        .unwrap();
+    let client = TradingViewClient::builder()
+        .endpoints(endpoints)
+        .build()
+        .unwrap();
+
+    let symbols = (0..1000)
+        .map(|index| format!("NASDAQ:A{index:04}"))
+        .collect::<Vec<_>>();
+    let batch = client.equity().quotes_batch(symbols).await.unwrap();
+
+    assert_eq!(batch.successes.len(), 1000);
+    assert_eq!(responder.calls(), 1);
+}
+
+#[tokio::test]
+async fn snapshot_batch_auto_strategy_preserves_order_across_chunks() {
+    let server = MockServer::start().await;
+    let responder = DynamicScanResponder::new();
+    Mock::given(method("POST"))
+        .and(path("/global/scan"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let endpoints = Endpoints::default()
+        .with_scanner_base_url(server.uri())
+        .unwrap();
+    let client = TradingViewClient::builder()
+        .endpoints(endpoints)
+        .build()
+        .unwrap();
+
+    let symbols = (0..1500)
+        .rev()
+        .map(|index| format!("NASDAQ:O{index:04}"))
+        .collect::<Vec<_>>();
+    let quotes = client.equity().quotes(symbols.clone()).await.unwrap();
+
+    assert_eq!(quotes.len(), symbols.len());
+    assert_eq!(
+        quotes.first().unwrap().instrument.ticker.as_str(),
+        symbols[0]
+    );
+    assert_eq!(
+        quotes.last().unwrap().instrument.ticker.as_str(),
+        symbols[symbols.len() - 1]
+    );
+    assert!(responder.calls() > 1);
 }
 
 #[tokio::test]
@@ -756,6 +994,23 @@ fn builder_rejects_zero_request_budget_limits() {
         .unwrap_err();
 
     assert!(matches!(error, Error::InvalidRequestBudget { .. }));
+}
+
+#[test]
+fn builder_rejects_invalid_snapshot_batch_config() {
+    let error = TradingViewClient::builder()
+        .snapshot_batch_config(
+            SnapshotBatchConfig::builder()
+                .strategy(SnapshotBatchStrategy::Chunked {
+                    chunk_size: 0,
+                    max_concurrent_requests: 4,
+                })
+                .build(),
+        )
+        .build()
+        .unwrap_err();
+
+    assert!(matches!(error, Error::InvalidSnapshotBatchConfig { .. }));
 }
 
 #[test]

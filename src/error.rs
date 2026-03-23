@@ -82,6 +82,9 @@ pub enum Error {
     #[error("request budget field {field} must be greater than zero")]
     InvalidRequestBudget { field: &'static str },
 
+    #[error("snapshot batch config field {field} must be greater than zero")]
+    InvalidSnapshotBatchConfig { field: &'static str },
+
     #[error("invalid websocket frame: {0}")]
     Protocol(&'static str),
 }
@@ -116,6 +119,7 @@ impl Error {
             | Self::InvalidBatchConcurrency
             | Self::InvalidRetryBounds { .. }
             | Self::InvalidRequestBudget { .. }
+            | Self::InvalidSnapshotBatchConfig { .. }
             | Self::Protocol(_) => ErrorKind::Protocol,
             Self::EmptySearchQuery | Self::ApiMessage(_) => ErrorKind::Api,
             Self::ApiStatus { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS => {
