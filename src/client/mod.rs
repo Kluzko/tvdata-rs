@@ -121,18 +121,42 @@ fn default_interactive_websocket_budget_concurrency() -> usize {
     2
 }
 
+#[cfg(any(
+    feature = "calendar",
+    feature = "crypto",
+    feature = "equity",
+    feature = "forex"
+))]
 fn default_snapshot_chunk_size() -> usize {
     250
 }
 
+#[cfg(any(
+    feature = "calendar",
+    feature = "crypto",
+    feature = "equity",
+    feature = "forex"
+))]
 fn default_snapshot_chunk_concurrency() -> usize {
     4
 }
 
+#[cfg(any(
+    feature = "calendar",
+    feature = "crypto",
+    feature = "equity",
+    feature = "forex"
+))]
 fn default_snapshot_auto_single_request_limit() -> usize {
     1_000
 }
 
+#[cfg(any(
+    feature = "calendar",
+    feature = "crypto",
+    feature = "equity",
+    feature = "forex"
+))]
 fn default_snapshot_auto_target_cells() -> usize {
     25_000
 }
@@ -426,6 +450,12 @@ impl SnapshotBatchConfig {
     }
 }
 
+#[cfg(any(
+    feature = "calendar",
+    feature = "crypto",
+    feature = "equity",
+    feature = "forex"
+))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SnapshotBatchPlan {
     pub(crate) chunk_size: usize,
@@ -945,6 +975,12 @@ impl TradingViewClient {
             .unwrap_or(requested)
     }
 
+    #[cfg(any(
+        feature = "calendar",
+        feature = "crypto",
+        feature = "equity",
+        feature = "forex"
+    ))]
     pub(crate) fn plan_snapshot_batch(&self, symbols: usize, columns: usize) -> SnapshotBatchPlan {
         let effective_http_cap = self
             .request_budget

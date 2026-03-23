@@ -158,7 +158,7 @@ enum WindowOrdering {
 
 struct CalendarScanSpec<T, Decode, Date>
 where
-    Decode: Fn(&RowDecoder, &ScanRow) -> T,
+    Decode: Fn(&RowDecoder, &ScanRow) -> Option<T>,
     Date: Fn(&T) -> Option<OffsetDateTime>,
 {
     sort_by: Column,
@@ -293,7 +293,7 @@ async fn scan_calendar_window<T, Decode, Date>(
     spec: CalendarScanSpec<T, Decode, Date>,
 ) -> Result<Vec<T>>
 where
-    Decode: Fn(&RowDecoder, &ScanRow) -> T,
+    Decode: Fn(&RowDecoder, &ScanRow) -> Option<T>,
     Date: Fn(&T) -> Option<OffsetDateTime>,
 {
     if limit == 0 || from > to {
@@ -330,7 +330,9 @@ where
 
         let mut reached_window_end = false;
         for row in &response.rows {
-            let entry = decode(&decoder, row);
+            let Some(entry) = decode(&decoder, row) else {
+                continue;
+            };
             let Some(entry_date) = event_date(&entry) else {
                 continue;
             };
@@ -382,48 +384,43 @@ where
     Ok(results)
 }
 
-fn decode_earnings_entry(decoder: &RowDecoder, row: &ScanRow) -> EarningsCalendarEntry {
-    EarningsCalendarEntry {
+fn decode_earnings_entry(decoder: &RowDecoder, row: &ScanRow) -> Option<EarningsCalendarEntry> {
+    Some(EarningsCalendarEntry {
         instrument: decoder.identity(row),
-        release_at: decoder
-            .timestamp(row, analyst::EARNINGS_RELEASE_NEXT_DATE.as_str())
-            .expect("earnings calendar rows must have a release timestamp"),
+        release_at: decoder.timestamp(row, analyst::EARNINGS_RELEASE_NEXT_DATE.as_str())?,
         release_time_code: decoder.whole_number(row, analyst::EARNINGS_RELEASE_NEXT_TIME.as_str()),
         calendar_date: decoder
             .timestamp(row, analyst::EARNINGS_RELEASE_NEXT_CALENDAR_DATE.as_str()),
         eps_forecast_next_fq: decoder.number(row, analyst::EPS_FORECAST_NEXT_FQ.as_str()),
-    }
+    })
 }
 
 fn decode_dividend_entry(
     decoder: &RowDecoder,
     row: &ScanRow,
     date_kind: DividendDateKind,
-) -> DividendCalendarEntry {
+) -> Option<DividendCalendarEntry> {
     let ex_date = decoder.timestamp(row, calendar_fields::EX_DIVIDEND_DATE_UPCOMING.as_str());
     let payment_date = decoder.timestamp(row, calendar_fields::PAYMENT_DATE_UPCOMING.as_str());
     let effective_date = match date_kind {
         DividendDateKind::ExDate => ex_date,
         DividendDateKind::PaymentDate => payment_date,
-    }
-    .expect("dividend calendar rows must have an effective timestamp");
+    }?;
 
-    DividendCalendarEntry {
+    Some(DividendCalendarEntry {
         instrument: decoder.identity(row),
         effective_date,
         ex_date,
         payment_date,
         amount: decoder.number(row, calendar_fields::DIVIDEND_AMOUNT_UPCOMING.as_str()),
         yield_percent: decoder.number(row, calendar_fields::DIVIDEND_YIELD_UPCOMING.as_str()),
-    }
+    })
 }
 
-fn decode_ipo_entry(decoder: &RowDecoder, row: &ScanRow) -> IpoCalendarEntry {
-    IpoCalendarEntry {
+fn decode_ipo_entry(decoder: &RowDecoder, row: &ScanRow) -> Option<IpoCalendarEntry> {
+    Some(IpoCalendarEntry {
         instrument: decoder.identity(row),
-        offer_date: decoder
-            .timestamp(row, calendar_fields::IPO_OFFER_DATE.as_str())
-            .expect("IPO calendar rows must have an offer timestamp"),
+        offer_date: decoder.timestamp(row, calendar_fields::IPO_OFFER_DATE.as_str())?,
         offer_time_code: decoder.whole_number(row, calendar_fields::IPO_OFFER_TIME.as_str()),
         announcement_date: decoder.timestamp(row, calendar_fields::IPO_ANNOUNCEMENT_DATE.as_str()),
         offer_price_usd: decoder.number(row, calendar_fields::IPO_OFFER_PRICE_USD.as_str()),
@@ -436,7 +433,7 @@ fn decode_ipo_entry(decoder: &RowDecoder, row: &ScanRow) -> IpoCalendarEntry {
             .number(row, calendar_fields::IPO_OFFERED_SHARES_PRIMARY.as_str()),
         offered_shares_secondary: decoder
             .number(row, calendar_fields::IPO_OFFERED_SHARES_SECONDARY.as_str()),
-    }
+    })
 }
 
 impl EarningsCalendarEntry {
