@@ -57,6 +57,9 @@ Initialization paths:
 - `TradingViewClient::from_config(...)` with `TradingViewClientConfig` for grouped backend configuration
 - preset constructors like `for_backend_history()`, `for_research()`, and `for_interactive()` when you want tuned defaults
 
+`for_backend_history()` starts with a conservative chart-history envelope: `4` concurrent
+websocket sessions and a matching default batch concurrency for large daily-bar ingestion.
+
 ## Quick Start
 
 ```rust,no_run

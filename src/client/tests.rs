@@ -116,6 +116,87 @@ impl ClientObserver for RecordingObserver {
     }
 }
 
+async fn spawn_history_batch_server(
+    expected_connections: usize,
+    response_delay: Duration,
+) -> (
+    std::net::SocketAddr,
+    Arc<AtomicUsize>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let max_in_flight = Arc::new(AtomicUsize::new(0));
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let server_max_in_flight = Arc::clone(&max_in_flight);
+    let server_in_flight = Arc::clone(&in_flight);
+
+    let server = tokio::spawn(async move {
+        let mut connection_tasks = Vec::with_capacity(expected_connections);
+
+        for _ in 0..expected_connections {
+            let (stream, _) = listener.accept().await.unwrap();
+            let in_flight = Arc::clone(&server_in_flight);
+            let max_in_flight = Arc::clone(&server_max_in_flight);
+            connection_tasks.push(tokio::spawn(async move {
+                let mut socket = accept_async(stream).await.unwrap();
+                let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                max_in_flight.fetch_max(current, Ordering::SeqCst);
+
+                while let Some(message) = socket.next().await {
+                    let message = message.unwrap();
+                    if let Message::Text(text) = message {
+                        let payload = crate::transport::websocket::parse_framed_messages(&text)
+                            .unwrap()
+                            .remove(0)
+                            .to_owned();
+                        let envelope: Value = serde_json::from_str(&payload).unwrap();
+                        let method = envelope
+                            .get("m")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+
+                        if method == "create_series" {
+                            tokio::time::sleep(response_delay).await;
+                            send_ws_message(
+                                &mut socket,
+                                serde_json::json!({
+                                    "m": "timescale_update",
+                                    "p": [
+                                        "cs_test",
+                                        {
+                                            "s1": {
+                                                "s": [
+                                                    { "i": 0, "v": [1773667800.0, 252.105, 253.885, 249.88, 252.82, 32074209.0] }
+                                                ]
+                                            }
+                                        }
+                                    ]
+                                }),
+                            )
+                            .await;
+                            send_ws_message(
+                                &mut socket,
+                                serde_json::json!({ "m": "series_completed", "p": ["cs_test", "s1"] }),
+                            )
+                            .await;
+                            break;
+                        }
+                    }
+                }
+
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+
+        for task in connection_tasks {
+            task.await.unwrap();
+        }
+    });
+
+    (address, max_in_flight, server)
+}
+
 #[tokio::test]
 async fn scan_uses_market_route() {
     let server = MockServer::start().await;
@@ -687,12 +768,13 @@ fn backend_history_preset_applies_request_budget_defaults() {
     );
     assert_eq!(
         client.request_budget().max_concurrent_websocket_sessions,
-        Some(8)
+        Some(4)
     );
     assert_eq!(
         client.request_budget().min_http_interval,
         Some(Duration::from_millis(50))
     );
+    assert_eq!(client.history_config().default_batch_concurrency, 4);
 }
 
 #[tokio::test]
@@ -736,15 +818,76 @@ fn grouped_profile_config_matches_backend_history_preset() {
     let client =
         TradingViewClient::from_config(TradingViewClientConfig::backend_history()).unwrap();
 
-    assert_eq!(client.history_config().default_batch_concurrency, 8);
+    assert_eq!(client.history_config().default_batch_concurrency, 4);
     assert_eq!(
         client.request_budget().max_concurrent_http_requests,
         Some(8)
     );
     assert_eq!(
         client.request_budget().max_concurrent_websocket_sessions,
-        Some(8)
+        Some(4)
     );
+}
+
+#[tokio::test]
+async fn history_batch_caps_effective_concurrency_to_websocket_budget() {
+    let expected_connections = 8;
+    let (address, max_in_flight, server) =
+        spawn_history_batch_server(expected_connections, Duration::from_millis(60)).await;
+
+    let endpoints = Endpoints::default()
+        .with_websocket_url(format!("ws://{address}"))
+        .unwrap();
+    let request = crate::HistoryBatchRequest::new(
+        (0..expected_connections).map(|idx| format!("NASDAQ:SYM{idx}")),
+        crate::Interval::Day1,
+        1,
+    )
+    .concurrency(expected_connections);
+    let client = TradingViewClient::builder()
+        .endpoints(endpoints)
+        .request_budget(
+            RequestBudget::builder()
+                .max_concurrent_websocket_sessions(3)
+                .build(),
+        )
+        .build()
+        .unwrap();
+
+    let batch = client.history_batch_detailed(&request).await.unwrap();
+
+    assert_eq!(batch.successes.len(), expected_connections);
+    assert!(batch.missing.is_empty());
+    assert!(batch.failures.is_empty());
+    assert!(max_in_flight.load(Ordering::SeqCst) <= 3);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn backend_history_preset_uses_safe_daily_ingestion_envelope() {
+    let expected_connections = 8;
+    let (address, max_in_flight, server) =
+        spawn_history_batch_server(expected_connections, Duration::from_millis(80)).await;
+
+    let endpoints = Endpoints::default()
+        .with_websocket_url(format!("ws://{address}"))
+        .unwrap();
+    let mut config = TradingViewClientConfig::backend_history();
+    config.endpoints = endpoints;
+    let client = TradingViewClient::from_config(config).unwrap();
+
+    let series = client
+        .download_history(
+            (0..expected_connections).map(|idx| format!("NASDAQ:BAR{idx}")),
+            crate::Interval::Day1,
+            1,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(series.len(), expected_connections);
+    assert!(max_in_flight.load(Ordering::SeqCst) <= 4);
+    server.await.unwrap();
 }
 
 #[tokio::test]

@@ -64,19 +64,22 @@ impl TradingViewClient {
     /// }
     /// ```
     pub async fn history_batch(&self, request: &HistoryBatchRequest) -> Result<Vec<HistorySeries>> {
+        let effective_concurrency = self.effective_history_batch_concurrency(request.concurrency);
+
         #[cfg(feature = "tracing")]
         debug!(
             target: "tvdata_rs::history",
             requested = request.symbols.len(),
             interval = request.interval.as_code(),
             bars = request.bars,
-            concurrency = request.concurrency,
+            requested_concurrency = request.concurrency,
+            effective_concurrency,
             "starting history batch",
         );
 
         let series = fetch::fetch_history_batch_with(
             request.to_requests(),
-            request.concurrency,
+            effective_concurrency,
             |request| async move { self.history(&request).await },
         )
         .await?;
@@ -87,7 +90,7 @@ impl TradingViewClient {
                 successes: series.len(),
                 missing: 0,
                 failures: 0,
-                concurrency: request.concurrency,
+                concurrency: effective_concurrency,
                 mode: HistoryBatchMode::Strict,
             },
         ));
@@ -101,19 +104,22 @@ impl TradingViewClient {
         &self,
         request: &HistoryBatchRequest,
     ) -> Result<BatchResult<HistorySeries>> {
+        let effective_concurrency = self.effective_history_batch_concurrency(request.concurrency);
+
         #[cfg(feature = "tracing")]
         debug!(
             target: "tvdata_rs::history",
             requested = request.symbols.len(),
             interval = request.interval.as_code(),
             bars = request.bars,
-            concurrency = request.concurrency,
+            requested_concurrency = request.concurrency,
+            effective_concurrency,
             "starting detailed history batch",
         );
 
         let batch = fetch::fetch_history_batch_detailed_with(
             request.to_requests(),
-            request.concurrency,
+            effective_concurrency,
             |request| async move { self.history(&request).await },
         )
         .await?;
@@ -124,7 +130,7 @@ impl TradingViewClient {
                 successes: batch.successes.len(),
                 missing: batch.missing.len(),
                 failures: batch.failures.len(),
-                concurrency: request.concurrency,
+                concurrency: effective_concurrency,
                 mode: HistoryBatchMode::Detailed,
             },
         ));

@@ -166,7 +166,7 @@ async fn main() -> Result<()> {
         .request_budget(
             RequestBudget::builder()
                 .max_concurrent_http_requests(8)
-                .max_concurrent_websocket_sessions(8)
+                .max_concurrent_websocket_sessions(4)
                 .build(),
         )
         .build();
@@ -564,7 +564,7 @@ async fn main() -> Result<()> {
         .request_budget(
             RequestBudget::builder()
                 .max_concurrent_http_requests(8)
-                .max_concurrent_websocket_sessions(8)
+                .max_concurrent_websocket_sessions(4)
                 .min_http_interval(std::time::Duration::from_millis(50))
                 .build(),
         )
@@ -595,7 +595,7 @@ async fn main() -> Result<()> {
         .request_budget(
             RequestBudget::builder()
                 .max_concurrent_http_requests(8)
-                .max_concurrent_websocket_sessions(8)
+                .max_concurrent_websocket_sessions(4)
                 .min_http_interval(Duration::from_millis(50))
                 .build(),
         )
@@ -618,6 +618,10 @@ Preset constructors already use sensible request-budget defaults:
 - `TradingViewClient::for_backend_history()`
 - `TradingViewClient::for_research()`
 - `TradingViewClient::for_interactive()`
+
+`for_backend_history()` is intentionally conservative for chart-history workloads: it starts
+with `4` concurrent websocket sessions and a matching default history batch concurrency so
+large daily-bar jobs stay below the crate's safer request envelope unless you opt into more.
 
 The grouped equivalents are:
 

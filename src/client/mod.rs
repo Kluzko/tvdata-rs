@@ -89,8 +89,12 @@ fn default_backend_http_budget_concurrency() -> usize {
     8
 }
 
+fn default_backend_history_batch_concurrency() -> usize {
+    4
+}
+
 fn default_backend_websocket_budget_concurrency() -> usize {
-    8
+    4
 }
 
 fn default_backend_http_min_interval() -> Duration {
@@ -525,7 +529,7 @@ impl TradingViewClientConfig {
             .history(
                 HistoryClientConfig::builder()
                     .session_timeout(Duration::from_secs(60))
-                    .default_batch_concurrency(8)
+                    .default_batch_concurrency(default_backend_history_batch_concurrency())
                     .default_session(TradingSession::Regular)
                     .default_adjustment(Adjustment::Splits)
                     .build(),
@@ -846,6 +850,17 @@ impl TradingViewClient {
 
     pub fn request_budget(&self) -> &RequestBudget {
         &self.request_budget
+    }
+
+    pub(crate) fn effective_history_batch_concurrency(&self, requested: usize) -> usize {
+        if requested == 0 {
+            return 0;
+        }
+
+        self.request_budget
+            .max_concurrent_websocket_sessions
+            .map(|cap| requested.min(cap))
+            .unwrap_or(requested)
     }
 
     /// Executes a low-level TradingView screener query.

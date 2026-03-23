@@ -6,6 +6,15 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+### Changed
+
+- backend history presets now use a more conservative chart-history envelope for large daily-bar batches
+- history batch execution now caps effective concurrency to the configured websocket request budget
+
+### Added
+
+- regression coverage for websocket-capped history batching and backend-history daily ingestion envelopes
+
 ## [0.1.1] - 2026-03-22
 
 ### Added
